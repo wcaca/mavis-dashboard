@@ -1,14 +1,8 @@
-# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# Logs
-logs/*.log
-
-# Runtime
-*.pid
-
-# OS
 .DS_Store
+*.log
+logs/
+state/
