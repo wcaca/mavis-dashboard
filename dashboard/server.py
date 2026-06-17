@@ -143,6 +143,15 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if not check_auth(self):
+            # 公开接口（无需登录）
+            if self.path == '/health':
+                self.send_json({
+                    "status": "ok",
+                    "subscribers": len(subscribers),
+                    "history_size": len(push_history),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                return
             if self.path == '/' or self.path.startswith('/dashboard/') or self.path == '/index.html':
                 # serve login page
                 login_path = os.path.join(DASHBOARD_DIR, 'dashboard', 'login.html')
@@ -176,16 +185,6 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             # 推送历史
             self.send_json({
                 "history": list(push_history)
-            })
-            return
-
-        elif self.path == '/health':
-            # 服务健康
-            self.send_json({
-                "status": "ok",
-                "subscribers": len(subscribers),
-                "history_size": len(push_history),
-                "timestamp": datetime.now(timezone.utc).isoformat()
             })
             return
 
