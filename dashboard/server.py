@@ -377,6 +377,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"history": list(push_history)})
             return
 
+        if self.path == '/api/agent-memory':
+            self.handle_agent_memory()
+            return
+
         # 兼容老路径（/state/*, /events, /history）— 同样鉴权后响应
         if self.path.startswith('/state/'):
             rel = self.path[1:]
@@ -602,6 +606,89 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 if client_queue in subscribers:
                     subscribers.remove(client_queue)
             log(f"SSE 客户端断开（剩余 {len(subscribers)} 个）")
+
+    def handle_agent_memory(self):
+        """集成 wcaca/agent-memory 状态：profile + 最近决策 + 远程 compact + server health"""
+        try:
+            import urllib.request
+            import re as _re
+
+            result = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'sandbox': {
+                    'has_local_memory': os.path.isdir('/workspace/agent-memory'),
+                    'has_remote_compact': os.path.exists('/workspace/.memory-remote.md'),
+                },
+                'profile': {},
+                'recent_decisions': [],
+                'tools': [],
+                'remote_compact_size': 0,
+                'memory_server': {'status': 'unknown'},
+                'cloudflared': {'status': 'unknown'},
+            }
+
+            # 1. 读 profile.md 关键字段
+            profile_file = '/workspace/agent-memory/profile.md'
+            if os.path.isfile(profile_file):
+                with open(profile_file) as f:
+                    pf = f.read()
+                # 提取关键字段（### xxx 或 **xxx**:）
+                for line in pf.splitlines():
+                    m = _re.match(r'^\*\*([^*]+)\*\*:\s*(.+)', line)
+                    if m:
+                        key = m.group(1).strip().lower().replace(' ', '_')
+                        val = m.group(2).strip()[:200]  # 限制长度
+                        result['profile'][key] = val
+                    m = _re.match(r'^##\s+(.+)', line)
+                    if m and ':' not in line and not line.startswith('## 备注'):
+                        # 段落标题
+                        pass
+
+            # 2. 读最近 3 决策
+            dec_file = '/workspace/agent-memory/context/decisions-log.md'
+            if os.path.isfile(dec_file):
+                with open(dec_file) as f:
+                    df = f.read()
+                # 匹配 ### DEC-2026-XX-XX: ... 标题
+                decisions = _re.findall(r'^### (DEC-[^\n]+)', df, _re.MULTILINE)
+                result['recent_decisions'] = decisions[-3:][::-1]  # 最新 3 条
+
+            # 3. 远程 compact 大小
+            rc = '/workspace/.memory-remote.md'
+            if os.path.isfile(rc):
+                result['remote_compact_size'] = os.path.getsize(rc)
+
+            # 4. memory-server 健康（公网）
+            try:
+                resp = urllib.request.urlopen('https://memory.noteverse.space/health', timeout=5)
+                health = json.loads(resp.read())
+                result['memory_server'] = health
+            except Exception as e:
+                result['memory_server'] = {'status': 'unreachable', 'error': str(e)[:100]}
+
+            # 5. cloudflared 通过 SSH 检查
+            try:
+                ssh_host = os.environ.get('SSH_HOST', '163.7.3.92')
+                cmd = "pid=$(pgrep -f 'cloudflared tunnel' | head -1); routes=$(grep -c hostname /root/.cloudflared/config.yml 2>/dev/null || echo 0); [ -n \"$pid\" ] && echo \"pid=$pid routes=$routes\" || echo DOWN"
+                cf_status = os.popen(f'ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes {os.environ.get("SSH_USER", "root")}@{ssh_host} "{cmd}" 2>/dev/null').read().strip()
+                if cf_status == 'DOWN':
+                    result['cloudflared'] = {'status': 'down'}
+                elif cf_status:
+                    result['cloudflared'] = {'status': 'up', 'detail': cf_status}
+                else:
+                    result['cloudflared'] = {'status': 'unknown'}
+            except Exception as e:
+                result['cloudflared'] = {'status': 'ssh-fail', 'error': str(e)[:100]}
+
+            # 6. 工具列表
+            bin_dir = '/workspace/bin'
+            if os.path.isdir(bin_dir):
+                result['tools'] = sorted([f for f in os.listdir(bin_dir) if not f.startswith('.')])
+
+            self.send_json(result)
+        except Exception as e:
+            self.send_json({'error': str(e)}, status=500)
+
 
     def handle_publish(self):
         try:
