@@ -74,11 +74,14 @@ def _load_sessions():
                 data = json.load(f)
                 now = time.time()
                 # 过滤已过期
+                loaded = {}
                 for token, sess in data.items():
                     ttl = sess.get('ttl', SESSION_TTL_DEFAULT)
                     if now - sess['last_seen'] < ttl:
-                        sessions[token] = sess
-                log(f"加载 {len(sessions)} 个有效 session（清理 {len(data) - len(sessions)} 个过期）")
+                        loaded[token] = sess
+                with sessions_lock:
+                    sessions.update(loaded)
+                log(f"加载 {len(loaded)} 个有效 session（清理 {len(data) - len(loaded)} 个过期）")
         except Exception as e:
             log(f"⚠️  加载 sessions 失败: {e}")
 
@@ -88,8 +91,11 @@ def _save_sessions():
     def _do():
         try:
             os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
+            # 拷一份快照避免在主线程修改时遍历 dict 死循环
+            with sessions_lock:
+                snapshot = dict(sessions)
             with open(SESSION_FILE, 'w') as f:
-                json.dump(sessions, f, indent=2)
+                json.dump(snapshot, f, indent=2)
         except Exception as e:
             log(f"⚠️  保存 sessions 失败: {e}")
     threading.Thread(target=_do, daemon=True).start()
@@ -128,24 +134,28 @@ def get_session(token):
 
 
 def touch_session(token, sess):
-    """刷新 session 的 last_seen，并按需续期 cookie"""
+    """刷新 session 的 last_seen，必要时续期 token
+
+    返回 (new_token_or_None, sess)
+      - new_token_or_None: 续期后新 token（未续期时为 None）
+      - sess: 更新后的 session（last_seen 刷新）
+    """
     now = time.time()
     elapsed = now - sess['last_seen']
     sess['last_seen'] = now
-    new_token = token
+    new_token = None
     if elapsed > sess['ttl'] * SESSION_REFRESH_THRESHOLD:
-        # 续期：保留 TTL，重新生成 token（更安全）
+        # 续期：重新生成 token
         new_token = secrets.token_urlsafe(32)
-        old_sess = dict(sess)
         with sessions_lock:
             del sessions[token]
-            sessions[new_token] = old_sess
+            sessions[new_token] = sess
         _save_sessions()
     else:
         # 只刷新 last_seen
         with sessions_lock:
             sessions[token] = sess
-    return new_token
+    return new_token, sess
 
 
 def destroy_session(token):
@@ -254,7 +264,7 @@ def add_to_history(event_type, data):
 
 
 def check_auth(handler):
-    """返回 (sess, new_token) — 新 token 不为空表示续期"""
+    """返回 (sess, new_token) — new_token 不为 None 时表示需要重发 cookie"""
     cookie_str = handler.headers.get('Cookie', '')
     cookie = SimpleCookie(cookie_str)
     token_cookie = cookie.get(SESSION_COOKIE)
@@ -264,7 +274,7 @@ def check_auth(handler):
     sess = get_session(token)
     if not sess:
         return None, None
-    new_token = touch_session(token, sess)
+    new_token, sess = touch_session(token, sess)
     return sess, new_token
 
 
