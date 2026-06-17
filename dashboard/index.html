@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Mavis Agent Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="theme-color" content="#3b82f6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mavis">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📊</text></svg>">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📊</text></svg>">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  h1 { color: #60a5fa; margin-bottom: 8px; font-size: 28px; }
+  h2 { color: #93c5fd; margin: 24px 0 12px; font-size: 18px; }
+  .subtitle { color: #94a3b8; font-size: 14px; margin-bottom: 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .card h3 { font-size: 14px; color: #94a3b8; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .value { font-size: 32px; font-weight: 600; color: #f1f5f9; }
+  .value.ok { color: #4ade80; }
+  .value.warn { color: #fbbf24; }
+  .value.crit { color: #f87171; }
+  .meta { color: #64748b; font-size: 12px; margin-top: 4px; }
+  .bar {
+    background: #334155;
+    height: 8px;
+    border-radius: 4px;
+    margin-top: 12px;
+    overflow: hidden;
+  }
+  .bar-fill { height: 100%; transition: width 0.3s; }
+  .bar-fill.ok { background: #4ade80; }
+  .bar-fill.warn { background: #fbbf24; }
+  .bar-fill.crit { background: #f87171; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #334155; font-size: 14px; }
+  th { color: #94a3b8; font-weight: 500; font-size: 12px; text-transform: uppercase; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+  .pill.ok { background: #14532d; color: #4ade80; }
+  .pill.warn { background: #78350f; color: #fbbf24; }
+  .pill.crit { background: #7f1d1d; color: #f87171; }
+  .diff-section { white-space: pre-wrap; font-family: 'Monaco', 'Menlo', monospace; font-size: 13px; color: #cbd5e1; }
+  .refresh { color: #64748b; font-size: 12px; margin-top: 24px; text-align: center; }
+  .stale { color: #f59e0b; }
+  .err { color: #f87171; padding: 20px; }
+</style>
+</head>
+<body>
+<h1>🖥️ Mavis Agent Dashboard</h1>
+
+<div class="status-bar" id="statusBar">
+  <div class="status-indicator" id="statusIndicator">⏳</div>
+  <div class="status-text">
+    <strong id="statusOverall">Loading...</strong>
+    <span id="statusMeta" style="color:#94a3b8;font-size:12px;margin-left:12px;"></span>
+  </div>
+  <div class="status-checks" id="statusChecks"></div>
+</div>
+
+<div class="subtitle">
+  <span id="host">Loading...</span> ·
+  <span id="lastUpdate">never</span> ·
+  <a href="https://github.com/wcaca" style="color:#60a5fa;text-decoration:none;">@wcaca</a>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h3>磁盘使用</h3>
+    <div class="value" id="diskPct">--</div>
+    <div class="meta" id="diskMeta">-- / --</div>
+    <div class="bar"><div class="bar-fill" id="diskBar" style="width:0%"></div></div>
+  </div>
+
+  <div class="card">
+    <h3>Docker 容器</h3>
+    <div class="value" id="dockerRunning">--</div>
+    <div class="meta" id="dockerMeta">-- total · -- healthy</div>
+    <div class="bar"><div class="bar-fill" id="dockerBar" style="width:0%"></div></div>
+  </div>
+
+  <div class="card">
+    <h3>系统负载</h3>
+    <div class="value" id="load1">--</div>
+    <div class="meta" id="loadMeta">5min -- · 15min --</div>
+  </div>
+
+  <div class="card">
+    <h3>内存使用</h3>
+    <div class="value" id="memUsed">--</div>
+    <div class="meta" id="memMeta">total --</div>
+  </div>
+
+  <div class="card">
+    <h3>Docker 镜像</h3>
+    <div class="value" id="imageCount">--</div>
+    <div class="meta" id="imageMeta">total --</div>
+  </div>
+
+  <div class="card">
+    <h3>健康检查</h3>
+    <div class="value" id="healthStatus">--</div>
+    <div class="meta" id="healthMeta">last run --</div>
+  </div>
+</div>
+
+<h2>🐳 Docker 容器</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>名称</th><th>状态</th><th>镜像</th></tr></thead>
+    <tbody id="dockerTable"><tr><td colspan="3">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<h2>🔌 监听端口</h2>
+<div class="card">
+  <div id="ports" style="font-family:monospace;font-size:13px;color:#94a3b8;">--</div>
+</div>
+
+<h2>📂 占用 TOP 路径</h2>
+<div class="card">
+  <table>
+    <tbody id="pathsTable"></tbody>
+  </table>
+</div>
+
+<h2>📊 状态差异（记忆 vs 现实）</h2>
+<div class="card">
+  <div class="diff-section" id="diff">Loading...</div>
+</div>
+
+<div class="refresh">
+  ⏱️ 每 60 秒自动刷新 · 最后刷新: <span id="refreshTime">--</span>
+</div>
+
+<script>
+const STATE_URL = './state/latest.json';
+const DIFF_URL = './state/diff.md';
+
+function formatTime(iso) {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return d.toLocaleString();
+}
+
+function diskClass(pct) {
+  if (pct >= 90) return 'crit';
+  if (pct >= 80) return 'warn';
+  return 'ok';
+}
+
+async function fetchState() {
+  try {
+    const resp = await fetch(STATE_URL + '?t=' + Date.now());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return await resp.json();
+  } catch (e) {
+    document.getElementById('diff').innerHTML = '<div class="err">无法加载 state/latest.json: ' + e.message + '<br>请确保 dashboard 与 state/ 目录同级，且通过 HTTP 服务访问（不能 file://）</div>';
+    return null;
+  }
+}
+
+async function fetchStatus() {
+  try {
+    const resp = await fetch('./status.json?t=' + Date.now());
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+function renderStatus(status) {
+  const bar = document.getElementById('statusBar');
+  const indicator = document.getElementById('statusIndicator');
+  const overall = document.getElementById('statusOverall');
+  const meta = document.getElementById('statusMeta');
+  const checks = document.getElementById('statusChecks');
+
+  if (!status || !status.overall) {
+    bar.className = 'status-bar unknown';
+    indicator.textContent = '⏳';
+    overall.textContent = 'Unknown';
+    meta.textContent = '(运行 mavis-status 生成)';
+    return;
+  }
+
+  const o = status.overall;
+  bar.className = 'status-bar ' + o;
+  indicator.textContent = o === 'ok' ? '✅' : (o === 'warn' ? '⚠️' : '❌');
+  overall.textContent = o.toUpperCase();
+  meta.textContent = `${status.warn_count || 0} 警告, ${status.fail_count || 0} 失败 · ${new Date(status.timestamp || Date.now()).toLocaleString()}`;
+
+  // checks pills
+  checks.innerHTML = '';
+  if (status.checks) {
+    for (const [k, v] of Object.entries(status.checks)) {
+      const pill = document.createElement('span');
+      pill.className = 'status-check ' + v.status;
+      pill.textContent = k;
+      pill.title = v.detail || '';
+      checks.appendChild(pill);
+    }
+  }
+}
+
+async function fetchDiff() {
+  try {
+    const resp = await fetch(DIFF_URL + '?t=' + Date.now());
+    if (!resp.ok) return null;
+    return await resp.text();
+  } catch (e) {
+    return null;
+  }
+}
+
+async function fetchDocker() {
+  try {
+    const resp = await fetch('./state/docker.json?t=' + Date.now());
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+function render(snapshot, diff, dockerList) {
+  if (!snapshot) return;
+
+  // Header
+  document.getElementById('host').textContent = snapshot.host || 'unknown';
+  document.getElementById('lastUpdate').textContent = formatTime(snapshot.timestamp);
+
+  // Disk
+  const disk = snapshot.disk || {};
+  const diskPct = disk.pct || 0;
+  const dc = diskClass(diskPct);
+  document.getElementById('diskPct').textContent = diskPct + '%';
+  document.getElementById('diskPct').className = 'value ' + dc;
+  document.getElementById('diskMeta').textContent = `${disk.used || '?'} / ${disk.total || '?'} · avail ${disk.avail || '?'}`;
+  document.getElementById('diskBar').className = 'bar-fill ' + dc;
+  document.getElementById('diskBar').style.width = diskPct + '%';
+
+  // Docker
+  const docker = snapshot.docker || {};
+  const dr = docker.running || 0;
+  const dt = docker.total_containers || 0;
+  const dh = docker.restarting || 0;
+  const dockerClass = dh > 0 ? 'crit' : (dr === dt ? 'ok' : 'warn');
+  document.getElementById('dockerRunning').textContent = dr + '/' + dt;
+  document.getElementById('dockerRunning').className = 'value ' + dockerClass;
+  document.getElementById('dockerMeta').textContent = `total ${dt} · ${dh} restarting`;
+  document.getElementById('dockerBar').className = 'bar-fill ' + dockerClass;
+  document.getElementById('dockerBar').style.width = dt > 0 ? (dr/dt*100) : 0;
+
+  // Load
+  const load = snapshot.load || {};
+  const load1 = parseFloat(load['1min'] || 0);
+  document.getElementById('load1').textContent = load1.toFixed(2);
+  document.getElementById('load1').className = 'value ' + (load1 > 2 ? 'warn' : 'ok');
+  document.getElementById('loadMeta').textContent = `5min ${load['5min'] || '?'} · 15min ${load['15min'] || '?'}`;
+
+  // Memory
+  const mem = snapshot.memory || {};
+  document.getElementById('memUsed').textContent = mem.used || '?';
+  document.getElementById('memMeta').textContent = `total ${mem.total || '?'}`;
+
+  // Images
+  document.getElementById('imageCount').textContent = docker.image_count || 0;
+  document.getElementById('imageMeta').textContent = `total ${docker.image_size_total || '?'}`;
+
+  // Health (从 diff 提取)
+  if (diff) {
+    const overallMatch = diff.match(/overall.*?(\w+)/i) || diff.match(/(ok|warn|fail)/i);
+    if (overallMatch) {
+      const status = overallMatch[1].toLowerCase();
+      const cls = status === 'ok' ? 'ok' : (status === 'fail' ? 'crit' : 'warn');
+      document.getElementById('healthStatus').textContent = status.toUpperCase();
+      document.getElementById('healthStatus').className = 'value ' + cls;
+    }
+    document.getElementById('healthMeta').textContent = 'see diff below';
+  }
+
+  // Docker table
+  if (dockerList && dockerList.length > 0) {
+    const tbody = document.getElementById('dockerTable');
+    tbody.innerHTML = dockerList.map(c => {
+      const cls = c.status.includes('Up') && !c.status.includes('Restarting') ? 'ok'
+        : c.status.includes('Restarting') ? 'crit'
+        : 'warn';
+      return `<tr>
+        <td>${c.name}</td>
+        <td><span class="pill ${cls}">${c.status}</span></td>
+        <td style="color:#94a3b8">${c.image}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Ports
+  if (snapshot.listening_ports) {
+    const ports = snapshot.listening_ports.split(',').map(p => {
+      const parts = p.split(':');
+      return parts[parts.length - 1];
+    }).filter((v, i, a) => a.indexOf(v) === i).sort();
+    document.getElementById('ports').innerHTML = ports.map(p => `<span class="pill ok">${p}</span>`).join(' ');
+  }
+
+  // Paths
+  if (snapshot.top_paths) {
+    const paths = snapshot.top_paths.split('|').map(p => {
+      const m = p.match(/^(\S+)\s+(.+)$/);
+      return m ? { size: m[1], path: m[2] } : null;
+    }).filter(Boolean);
+    document.getElementById('pathsTable').innerHTML = paths.map(p =>
+      `<tr><td><strong>${p.size}</strong></td><td>${p.path}</td></tr>`
+    ).join('');
+  }
+
+  // Diff
+  if (diff) {
+    document.getElementById('diff').textContent = diff;
+  }
+}
+
+async function refresh() {
+  const [snapshot, diff, docker, status] = await Promise.all([
+    fetchState(),
+    fetchDiff(),
+    fetchDocker(),
+    fetchStatus()
+  ]);
+  renderStatus(status);
+  render(snapshot, diff, docker);
+  document.getElementById('refreshTime').textContent = new Date().toLocaleTimeString();
+}
+
+refresh();
+setInterval(refresh, 60000);  // 每 60 秒刷新
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch((e) => console.log('SW register failed:', e));
+}
+</script>
+</body>
+</html>
