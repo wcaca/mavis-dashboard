@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
 dashboard-server.py - Mavis Agent Dashboard HTTP server
+
 支持：
   - GET  /              → index.html
-  - GET  /state/*       → state 文件
-  - GET  /events        → SSE 实时推送
-  - POST /publish       → 接收推送（agent 调用）
-  - GET  /history       → 推送历史
+  - GET  /login         → login.html
+  - POST /login         → 登录 (支持 remember, 失败次数限制)
+  - POST /logout        → 登出
+  - GET  /api/me        → 当前用户信息 (登录后)
+  - POST /api/refresh   → 主动续期 cookie
+  - GET  /api/state/*   → state 文件
+  - GET  /api/events    → SSE 实时推送
+  - POST /api/publish   → 推送事件（agent 调用）
+  - GET  /api/history   → 推送历史
+  - GET  /health        → 服务健康（公开）
 """
 import http.server
 import socketserver
@@ -18,7 +25,7 @@ import threading
 import queue
 import hashlib
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.cookies import SimpleCookie
 
 PORT = int(os.environ.get('PORT', 8765))
@@ -33,52 +40,184 @@ DASHBOARD_SUBDIR = os.path.join(DASHBOARD_DIR, "dashboard")
 # Auth config
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
 DASHBOARD_PASSWORD_HASH = os.environ.get("DASHBOARD_PASSWORD_HASH", "")
-SESSION_COOKIE = "mavis_session"
-SESSION_TTL = 7 * 24 * 3600
 PASSWORD_SALT = "mavis-dashboard-v1"
 
-sessions = {}
-sessions_lock = threading.Lock()
+# Session config
+SESSION_COOKIE = "mavis_session"
+SESSION_TTL_DEFAULT = 7 * 24 * 3600         # 7 天
+SESSION_TTL_REMEMBER = 30 * 24 * 3600       # 30 天
+SESSION_REFRESH_THRESHOLD = 0.5             # 剩一半时间时自动续期
+SESSION_FILE = os.path.join(DASHBOARD_DIR, "state", "sessions.json")
+
+# Rate limit config
+LOGIN_MAX_FAILS = int(os.environ.get("LOGIN_MAX_FAILS", "5"))   # 5 次
+LOGIN_WINDOW = int(os.environ.get("LOGIN_WINDOW", "900"))        # 15 分钟
+RATE_LIMIT_FILE = os.path.join(DASHBOARD_DIR, "state", "login_attempts.json")
+
 
 def hash_password(password):
     return hashlib.sha256((PASSWORD_SALT + password).encode()).hexdigest()
 
-def check_auth(handler):
-    cookie_str = handler.headers.get('Cookie', '')
-    cookie = SimpleCookie(cookie_str)
-    token = cookie.get(SESSION_COOKIE)
+
+# ============ Session 管理（持久化） ============
+
+sessions = {}              # token -> {created, last_seen, user, remember}
+sessions_lock = threading.Lock()
+
+
+def _load_sessions():
+    """从文件加载 sessions（启动时调用）"""
+    global sessions
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, 'r') as f:
+                data = json.load(f)
+                now = time.time()
+                # 过滤已过期
+                for token, sess in data.items():
+                    ttl = sess.get('ttl', SESSION_TTL_DEFAULT)
+                    if now - sess['last_seen'] < ttl:
+                        sessions[token] = sess
+                log(f"加载 {len(sessions)} 个有效 session（清理 {len(data) - len(sessions)} 个过期）")
+        except Exception as e:
+            log(f"⚠️  加载 sessions 失败: {e}")
+
+
+def _save_sessions():
+    """把 sessions 持久化到文件（异步）"""
+    def _do():
+        try:
+            os.makedirs(os.path.dirname(SESSION_FILE), exist_ok=True)
+            with open(SESSION_FILE, 'w') as f:
+                json.dump(sessions, f, indent=2)
+        except Exception as e:
+            log(f"⚠️  保存 sessions 失败: {e}")
+    threading.Thread(target=_do, daemon=True).start()
+
+
+def create_session(user, remember=False):
+    token = secrets.token_urlsafe(32)
+    ttl = SESSION_TTL_REMEMBER if remember else SESSION_TTL_DEFAULT
+    now = time.time()
+    with sessions_lock:
+        sessions[token] = {
+            'created': now,
+            'last_seen': now,
+            'user': user,
+            'remember': remember,
+            'ttl': ttl
+        }
+    _save_sessions()
+    return token, ttl
+
+
+def get_session(token):
+    """获取 session，如果过期或不存在返回 None"""
     if not token:
-        return False
-    token = token.value
+        return None
     with sessions_lock:
         sess = sessions.get(token)
         if not sess:
-            return False
-        if time.time() - sess['created'] > SESSION_TTL:
+            return None
+        now = time.time()
+        if now - sess['last_seen'] > sess['ttl']:
             del sessions[token]
-            return False
-    return True
+            _save_sessions()
+            return None
+        return sess
 
-def create_session(handler):
-    token = secrets.token_urlsafe(32)
-    with sessions_lock:
-        sessions[token] = {'created': time.time(), 'user': DASHBOARD_USER}
-    handler.send_header('Set-Cookie', f'{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}')
 
-def destroy_session(handler):
-    cookie_str = handler.headers.get('Cookie', '')
-    cookie = SimpleCookie(cookie_str)
-    token = cookie.get(SESSION_COOKIE)
-    if token:
+def touch_session(token, sess):
+    """刷新 session 的 last_seen，并按需续期 cookie"""
+    now = time.time()
+    elapsed = now - sess['last_seen']
+    sess['last_seen'] = now
+    new_token = token
+    if elapsed > sess['ttl'] * SESSION_REFRESH_THRESHOLD:
+        # 续期：保留 TTL，重新生成 token（更安全）
+        new_token = secrets.token_urlsafe(32)
+        old_sess = dict(sess)
         with sessions_lock:
-            sessions.pop(token.value, None)
-    handler.send_header('Set-Cookie', f'{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')
+            del sessions[token]
+            sessions[new_token] = old_sess
+        _save_sessions()
+    else:
+        # 只刷新 last_seen
+        with sessions_lock:
+            sessions[token] = sess
+    return new_token
 
-# 推送历史（最近 50 条）
+
+def destroy_session(token):
+    with sessions_lock:
+        if token in sessions:
+            del sessions[token]
+    _save_sessions()
+
+
+# ============ 登录失败次数限制 ============
+
+login_attempts = {}        # ip -> [(timestamp, success)]
+attempts_lock = threading.Lock()
+
+
+def _load_attempts():
+    global login_attempts
+    if os.path.exists(RATE_LIMIT_FILE):
+        try:
+            with open(RATE_LIMIT_FILE, 'r') as f:
+                login_attempts = json.load(f)
+        except Exception:
+            login_attempts = {}
+
+
+def _save_attempts():
+    def _do():
+        try:
+            os.makedirs(os.path.dirname(RATE_LIMIT_FILE), exist_ok=True)
+            with open(RATE_LIMIT_FILE, 'w') as f:
+                json.dump(login_attempts, f, indent=2)
+        except Exception:
+            pass
+    threading.Thread(target=_do, daemon=True).start()
+
+
+def get_client_ip(handler):
+    """拿真实 IP（支持 X-Forwarded-For）"""
+    xff = handler.headers.get('X-Forwarded-For', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return handler.client_address[0] if handler.client_address else 'unknown'
+
+
+def is_rate_limited(ip):
+    """检查 IP 是否被限速（5 次/15 分钟）"""
+    with attempts_lock:
+        attempts = login_attempts.get(ip, [])
+        now = time.time()
+        # 清理过期
+        attempts = [(t, s) for t, s in attempts if now - t < LOGIN_WINDOW]
+        login_attempts[ip] = attempts
+        # 数失败
+        fails = sum(1 for t, s in attempts if not s)
+        return fails >= LOGIN_MAX_FAILS
+
+
+def record_attempt(ip, success):
+    with attempts_lock:
+        if ip not in login_attempts:
+            login_attempts[ip] = []
+        login_attempts[ip].append((time.time(), success))
+        # 清理
+        now = time.time()
+        login_attempts[ip] = [(t, s) for t, s in login_attempts[ip] if now - t < LOGIN_WINDOW]
+    _save_attempts()
+
+
+# ============ 推送历史 / 订阅者 ============
+
 push_history = []
 push_history_lock = threading.Lock()
-
-# 订阅者列表（SSE 客户端）
 subscribers = []
 subscribers_lock = threading.Lock()
 
@@ -89,7 +228,6 @@ def log(msg):
 
 
 def broadcast_event(event_type, data):
-    """向所有 SSE 订阅者推送事件"""
     msg = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
     dead = []
     with subscribers_lock:
@@ -115,13 +253,40 @@ def add_to_history(event_type, data):
             push_history.pop(0)
 
 
+def check_auth(handler):
+    """返回 (sess, new_token) — 新 token 不为空表示续期"""
+    cookie_str = handler.headers.get('Cookie', '')
+    cookie = SimpleCookie(cookie_str)
+    token_cookie = cookie.get(SESSION_COOKIE)
+    if not token_cookie:
+        return None, None
+    token = token_cookie.value
+    sess = get_session(token)
+    if not sess:
+        return None, None
+    new_token = touch_session(token, sess)
+    return sess, new_token
+
+
+def set_session_cookie(handler, token, ttl):
+    handler.send_header(
+        'Set-Cookie',
+        f'{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl}'
+    )
+
+
+def clear_session_cookie(handler):
+    handler.send_header(
+        'Set-Cookie',
+        f'{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'
+    )
+
+
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
-        # 简化日志
         pass
 
     def end_headers(self):
-        # CORS
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
@@ -131,136 +296,243 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
+    # ---------- GET ----------
+
     def do_GET(self):
-        # Auth gate
+        # 公开：/health
+        if self.path == '/health':
+            self.send_json({
+                "status": "ok",
+                "subscribers": len(subscribers),
+                "history_size": len(push_history),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+            return
+
+        # 公开：登录页
         if self.path == '/login' or self.path == '/login.html':
-            # serve login page
-            login_path = os.path.join(DASHBOARD_DIR, 'dashboard', 'login.html')
-            if os.path.exists(login_path):
-                self.send_file(login_path)
-            else:
-                self.send_error(404, "login.html not found")
+            self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'login.html'), 'text/html; charset=utf-8')
             return
 
-        if not check_auth(self):
-            # 公开接口（无需登录）
-            if self.path == '/health':
-                self.send_json({
-                    "status": "ok",
-                    "subscribers": len(subscribers),
-                    "history_size": len(push_history),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                })
-                return
-            if self.path == '/' or self.path.startswith('/dashboard/') or self.path == '/index.html':
-                # serve login page
-                login_path = os.path.join(DASHBOARD_DIR, 'dashboard', 'login.html')
-                if os.path.exists(login_path):
-                    self.send_file(login_path)
-                else:
-                    self.send_error(404, "login.html not found")
+        # 公开：dashboard 静态资源（main.js, sw.js, manifest.json, icons...）
+        if self.path.startswith('/static/') or self.path in ('/manifest.json', '/sw.js', '/favicon.ico'):
+            full = os.path.join(DASHBOARD_DIR, 'dashboard', self.path.lstrip('/'))
+            if os.path.isfile(full):
+                self.serve_file(full)
             else:
-                self.send_error(401, "unauthorized")
+                self.send_error(404, "not found")
             return
 
-        if self.path == '/':
-            # dashboard 主页面
-            self.path = '/dashboard/index.html'
+        # 鉴权 gate
+        sess, new_token = check_auth(self)
+        if not sess:
+            # 区分 API 和页面请求
+            if self.path.startswith('/api/') or self.path in ('/events', '/history', '/publish'):
+                self.send_json({"error": "unauthorized", "code": "AUTH_REQUIRED"}, status=401)
+            else:
+                # 浏览器访问页面 → 跳 login.html（带 next 参数）
+                self.redirect(f'/login?next={self.path}')
+            return
 
-        if self.path.startswith('/state/'):
-            # state 文件
-            rel = self.path[1:]  # state/latest.json
+        # 续期 cookie
+        if new_token:
+            set_session_cookie(self, new_token, sess['ttl'])
+
+        # API 路由
+        if self.path == '/api/me':
+            self.send_json({
+                "user": sess['user'],
+                "logged_in_at": datetime.fromtimestamp(sess['created'], timezone.utc).isoformat(),
+                "last_seen": datetime.fromtimestamp(sess['last_seen'], timezone.utc).isoformat(),
+                "remember": sess['remember'],
+                "ttl": sess['ttl'],
+                "expires_at": datetime.fromtimestamp(sess['last_seen'] + sess['ttl'], timezone.utc).isoformat()
+            })
+            return
+
+        if self.path == '/api/state' or self.path.startswith('/api/state/'):
+            rel = self.path[len('/api/'):]   # state/xxx
             full = os.path.join(ROOT, rel)
             if os.path.isfile(full):
-                self.send_file(full)
+                self.serve_file(full)
+            else:
+                self.send_json({"error": "not found"}, status=404)
+            return
+
+        if self.path == '/api/events':
+            self.handle_sse()
+            return
+
+        if self.path == '/api/history':
+            self.send_json({"history": list(push_history)})
+            return
+
+        # 兼容老路径（/state/*, /events, /history）— 同样鉴权后响应
+        if self.path.startswith('/state/'):
+            rel = self.path[1:]
+            full = os.path.join(ROOT, rel)
+            if os.path.isfile(full):
+                self.serve_file(full)
                 return
             self.send_error(404, "state file not found")
 
         elif self.path == '/events':
-            # SSE
             self.handle_sse()
             return
 
         elif self.path == '/history':
-            # 推送历史
-            self.send_json({
-                "history": list(push_history)
-            })
+            self.send_json({"history": list(push_history)})
             return
 
         elif self.path == '/status.json':
-            # mavis-status 缓存
             try:
                 with open('/workspace/agent-memory/state/mavis-status.json') as f:
-                    import json as _json
-                    data = _json.load(f)
+                    data = json.load(f)
                 self.send_json(data)
             except FileNotFoundError:
                 self.send_json({"overall": "unknown", "message": "尚未运行 mavis-status"})
             return
 
-        else:
-            # 普通静态文件
-            full = os.path.join(DASHBOARD_DIR, self.path[1:])
-            if os.path.isfile(full):
-                self.send_file(full)
-                return
-            self.send_error(404, "not found")
+        # 静态文件
+        if self.path == '/' or self.path == '/index.html':
+            self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'index.html'), 'text/html; charset=utf-8')
+            return
+
+        # 其他静态资源（dashboard 下的所有文件）
+        full = os.path.join(DASHBOARD_DIR, 'dashboard', self.path.lstrip('/'))
+        if os.path.isfile(full):
+            self.serve_file(full)
+            return
+        self.send_error(404, "not found")
+
+    # ---------- POST ----------
 
     def do_POST(self):
+        ip = get_client_ip(self)
+
+        # 登录（公开）
         if self.path == '/login':
+            # 限速检查
+            if is_rate_limited(ip):
+                retry_after = LOGIN_WINDOW
+                self.send_json({
+                    "error": "too_many_attempts",
+                    "code": "RATE_LIMITED",
+                    "message": f"登录失败次数过多，请 {LOGIN_WINDOW//60} 分钟后再试",
+                    "retry_after": retry_after
+                }, status=429)
+                return
+
             try:
                 length = int(self.headers.get('Content-Length', 0))
                 body = self.rfile.read(length)
-                data = json.loads(body)
-                username = data.get('username', '')
-                password = data.get('password', '')
-                if username == DASHBOARD_USER and DASHBOARD_PASSWORD_HASH and hash_password(password) == DASHBOARD_PASSWORD_HASH:
-                    self.send_response(200)
-                    create_session(self)
-                    self.send_header('Content-Type', 'application/json')
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"status": "ok", "user": username}).encode())
-                else:
-                    self.send_response(401)
-                    self.send_header('Content-Type', 'application/json')
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"status": "error", "message": "invalid credentials"}).encode())
-            except Exception as e:
-                self.send_error(400, str(e))
-            return
+                data = json.loads(body) if body else {}
+            except Exception:
+                record_attempt(ip, False)
+                self.send_json({"error": "invalid_request", "code": "BAD_JSON", "message": "无效的 JSON"}, status=400)
+                return
 
-        if self.path == '/logout':
+            username = data.get('username', '').strip()
+            password = data.get('password', '')
+            remember = bool(data.get('remember', False))
+
+            # 用户名
+            if username != DASHBOARD_USER:
+                record_attempt(ip, False)
+                self.send_json({
+                    "error": "invalid_credentials",
+                    "code": "BAD_USERNAME",
+                    "message": "用户名或密码错误"
+                }, status=401)
+                return
+
+            # 密码
+            if not DASHBOARD_PASSWORD_HASH or hash_password(password) != DASHBOARD_PASSWORD_HASH:
+                record_attempt(ip, False)
+                self.send_json({
+                    "error": "invalid_credentials",
+                    "code": "BAD_PASSWORD",
+                    "message": "用户名或密码错误"
+                }, status=401)
+                return
+
+            # 成功
+            record_attempt(ip, True)
+            token, ttl = create_session(username, remember)
             self.send_response(200)
-            destroy_session(self)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok"}).encode())
+            set_session_cookie(self, token, ttl)
+            self.send_json({
+                "success": True,
+                "user": username,
+                "remember": remember,
+                "ttl": ttl,
+                "expires_in": ttl,
+                "next": data.get('next', '/')
+            })
+            log(f"✅ 登录: {username} (remember={remember}, ttl={ttl}s) from {ip}")
             return
 
-        if not check_auth(self):
-            self.send_error(401, "unauthorized")
+        # 登出
+        if self.path == '/logout':
+            cookie_str = self.headers.get('Cookie', '')
+            cookie = SimpleCookie(cookie_str)
+            token_cookie = cookie.get(SESSION_COOKIE)
+            if token_cookie:
+                destroy_session(token_cookie.value)
+            self.send_response(200)
+            clear_session_cookie(self)
+            self.send_json({"success": True, "message": "已登出"})
             return
 
-        if self.path == '/publish':
+        # 主动续期
+        if self.path == '/api/refresh':
+            sess, new_token = check_auth(self)
+            if not sess:
+                self.send_json({"error": "unauthorized"}, status=401)
+                return
+            if new_token:
+                set_session_cookie(self, new_token, sess['ttl'])
+            self.send_json({
+                "success": True,
+                "expires_in": sess['ttl'],
+                "expires_at": datetime.fromtimestamp(sess['last_seen'] + sess['ttl'], timezone.utc).isoformat()
+            })
+            return
+
+        # 鉴权 gate
+        sess, new_token = check_auth(self)
+        if not sess:
+            self.send_json({"error": "unauthorized"}, status=401)
+            return
+        if new_token:
+            set_session_cookie(self, new_token, sess['ttl'])
+
+        if self.path == '/api/publish':
             self.handle_publish()
             return
+
         self.send_error(404, "endpoint not found")
 
-    def send_file(self, full_path):
+    # ---------- helpers ----------
+
+    def serve_file(self, full_path, default_type='application/octet-stream'):
         try:
             with open(full_path, 'rb') as f:
                 content = f.read()
-            # 判断 content type
             if full_path.endswith('.html'):
                 ctype = 'text/html; charset=utf-8'
             elif full_path.endswith('.json'):
                 ctype = 'application/json'
             elif full_path.endswith('.md'):
                 ctype = 'text/markdown; charset=utf-8'
+            elif full_path.endswith('.js'):
+                ctype = 'application/javascript; charset=utf-8'
+            elif full_path.endswith('.css'):
+                ctype = 'text/css; charset=utf-8'
+            elif full_path.endswith('.svg'):
+                ctype = 'image/svg+xml'
             else:
-                ctype = 'application/octet-stream'
-
+                ctype = default_type
             self.send_response(200)
             self.send_header('Content-Type', ctype)
             self.send_header('Content-Length', str(len(content)))
@@ -270,16 +542,21 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, str(e))
 
-    def send_json(self, data):
+    def send_json(self, data, status=200):
         content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
-        self.send_response(200)
+        self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(content)))
         self.end_headers()
         self.wfile.write(content)
 
+    def redirect(self, location):
+        self.send_response(302)
+        self.send_header('Location', location)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
     def handle_sse(self):
-        """Server-Sent Events"""
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Cache-Control', 'no-cache')
@@ -287,7 +564,6 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('X-Accel-Buffering', 'no')
         self.end_headers()
 
-        # 客户端消息队列
         client_queue = queue.Queue(maxsize=100)
 
         with subscribers_lock:
@@ -296,26 +572,19 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         log(f"SSE 客户端连接（当前 {len(subscribers)} 个）")
 
         try:
-            # 发送初始 hello
             hello = f"event: hello\ndata: {json.dumps({'timestamp': datetime.now(timezone.utc).isoformat(), 'subscribers': len(subscribers)})}\n\n"
             self.wfile.write(hello.encode('utf-8'))
             self.wfile.flush()
 
-            # 维护心跳
-            last_ping = time.time()
-
             while True:
                 try:
-                    # 阻塞等待消息（最多 30 秒）
                     msg = client_queue.get(timeout=30)
                     self.wfile.write(msg.encode('utf-8'))
                     self.wfile.flush()
                 except queue.Empty:
-                    # 30 秒没消息，发送心跳
                     ping = f"event: ping\ndata: {json.dumps({'time': datetime.now(timezone.utc).isoformat()})}\n\n"
                     self.wfile.write(ping.encode('utf-8'))
                     self.wfile.flush()
-                    last_ping = time.time()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
@@ -325,7 +594,6 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             log(f"SSE 客户端断开（剩余 {len(subscribers)} 个）")
 
     def handle_publish(self):
-        """接收推送（agent 调用）"""
         try:
             length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(length).decode('utf-8')
@@ -337,10 +605,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         event_type = data.get('type', 'message')
         event_data = data.get('data', {})
 
-        # 记录历史
         add_to_history(event_type, event_data)
-
-        # 广播
         broadcast_event(event_type, event_data)
 
         log(f"📤 推送 [{event_type}]: {json.dumps(event_data, ensure_ascii=False)[:100]}")
@@ -358,14 +623,22 @@ class ReusingTCPServer(socketserver.ThreadingTCPServer):
 
 
 def main():
+    # 启动时加载持久化数据
+    _load_sessions()
+    _load_attempts()
+
     log(f"🚀 Mavis Dashboard server starting on port {PORT}")
     log(f"   Root: {ROOT}")
+    log(f"   User: {DASHBOARD_USER}")
+    log(f"   Sessions: {len(sessions)} loaded")
+    log(f"   Login: http://localhost:{PORT}/login")
     log(f"   Dashboard: http://localhost:{PORT}/")
-    log(f"   SSE: http://localhost:{PORT}/events")
-    log(f"   Publish: POST http://localhost:{PORT}/publish")
+    log(f"   SSE: http://localhost:{PORT}/api/events")
+    log(f"   Publish: POST http://localhost:{PORT}/api/publish")
+    log(f"   Health: http://localhost:{PORT}/health")
 
-    # Bind logic + SSL support
-    use_ssl = bool(os.environ.get("ENABLE_SSL") == "1" and SSL_CERT and SSL_KEY and os.path.exists(SSL_CERT) and os.path.exists(SSL_KEY))
+    use_ssl = bool(os.environ.get("ENABLE_SSL") == "1" and SSL_CERT and SSL_KEY
+                   and os.path.exists(SSL_CERT) and os.path.exists(SSL_KEY))
     if os.environ.get("LOCAL_ONLY") == "1":
         BIND_HOST = "127.0.0.1"
     else:

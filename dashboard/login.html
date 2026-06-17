@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <title>Mavis Dashboard Login</title>
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="theme-color"="#0f172a">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -19,18 +20,19 @@
   .card {
     background: rgba(30, 41, 59, 0.8);
     backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     border: 1px solid #334155;
     border-radius: 16px;
     padding: 40px;
     width: 100%;
-    max-width: 400px;
+    max-width: 420px;
     box-shadow: 0 20px 50px rgba(0,0,0,0.4);
   }
   h1 { color: #60a5fa; margin: 0 0 8px; font-size: 24px; text-align: center; }
   .subtitle { color: #94a3b8; text-align: center; margin-bottom: 32px; font-size: 14px; }
-  .form-group { margin-bottom: 20px; }
+  .form-group { margin-bottom: 18px; }
   label { display: block; color: #cbd5e1; margin-bottom: 8px; font-size: 14px; }
-  input {
+  input[type=text], input[type=password] {
     width: 100%;
     padding: 12px 16px;
     background: #0f172a;
@@ -41,6 +43,18 @@
     transition: border-color 0.2s;
   }
   input:focus { outline: none; border-color: #60a5fa; }
+  input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .checkbox-group {
+    display: flex;
+    align-items: center;
+    margin-bottom: 20px;
+    user-select: none;
+  }
+  .checkbox-group input { margin-right: 8px; cursor: pointer; width: 16px; height: 16px; }
+  .checkbox-group label { margin: 0; font-size: 14px; color: #94a3b8; cursor: pointer; }
+  .checkbox-group .hint { color: #64748b; font-size: 12px; margin-left: 4px; }
+
   button {
     width: 100%;
     padding: 14px;
@@ -51,21 +65,26 @@
     font-size: 16px;
     font-weight: 600;
     cursor: pointer;
-    transition: transform 0.1s;
+    transition: transform 0.1s, opacity 0.2s;
   }
   button:hover { transform: translateY(-1px); }
   button:active { transform: translateY(0); }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .error {
-    background: #7f1d1d;
-    color: #fecaca;
-    padding: 12px;
+  button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+  .error, .info {
+    padding: 12px 16px;
     border-radius: 6px;
     margin-bottom: 20px;
     font-size: 14px;
     display: none;
   }
+  .error { background: #7f1d1d; color: #fecaca; border: 1px solid #991b1b; }
+  .info  { background: #1e3a8a; color: #bfdbfe; border: 1px solid #1e40af; }
+
   .footer { text-align: center; color: #64748b; font-size: 12px; margin-top: 24px; }
+  .footer code { background: #0f172a; padding: 2px 6px; border-radius: 4px; }
+
+  .countdown { color: #fbbf24; }
 </style>
 </head>
 <body>
@@ -73,17 +92,24 @@
   <h1>🔐 Mavis Dashboard</h1>
   <div class="subtitle">请登录以查看实时状态</div>
 
+  <div class="info" id="info"></div>
   <div class="error" id="error"></div>
 
-  <form id="loginForm">
+  <form id="loginForm" autocomplete="on">
     <div class="form-group">
-      <label>用户名</label>
-      <input type="text" id="username" autocomplete="username" required>
+      <label for="username">用户名</label>
+      <input type="text" id="username" name="username" autocomplete="username" required>
     </div>
     <div class="form-group">
-      <label>密码</label>
-      <input type="password" id="password" autocomplete="current-password" required>
+      <label for="password">密码</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
     </div>
+
+    <div class="checkbox-group">
+      <input type="checkbox" id="remember" name="remember">
+      <label for="remember">记住我 <span class="hint">(30 天免登录)</span></label>
+    </div>
+
     <button type="submit" id="submitBtn">登录</button>
   </form>
 
@@ -94,41 +120,126 @@
 
 <script>
 const form = document.getElementById('loginForm');
-const error = document.getElementById('error');
+const errorEl = document.getElementById('error');
+const infoEl = document.getElementById('info');
 const submitBtn = document.getElementById('submitBtn');
+const usernameInput = document.getElementById('username');
+const passwordInput = document.getElementById('password');
+const rememberInput = document.getElementById('remember');
+
+// 解析 ?next= 重定向参数
+const urlParams = new URLSearchParams(window.location.search);
+const nextUrl = urlParams.get('next') || '/';
+
+// 如果已被重定向过来 → 显示提示
+if (urlParams.get('expired') === '1') {
+  infoEl.textContent = '⏰ 登录已过期，请重新登录';
+  infoEl.style.display = 'block';
+} else if (nextUrl !== '/') {
+  infoEl.textContent = '🔒 请登录以访问 ' + nextUrl;
+  infoEl.style.display = 'block';
+}
+
+// 自动聚焦
+usernameInput.focus();
+
+// 禁用浏览器自动填充误触
+let submitting = false;
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.style.display = 'block';
+  errorEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function hideError() {
+  errorEl.style.display = 'none';
+  errorEl.textContent = '';
+}
+
+function setSubmitting(state) {
+  submitting = state;
+  submitBtn.disabled = state;
+  submitBtn.textContent = state ? '登录中...' : '登录';
+  usernameInput.disabled = state;
+  passwordInput.disabled = state;
+  rememberInput.disabled = state;
+}
+
+// 限速倒计时
+let countdownTimer = null;
+function startCountdown(seconds) {
+  if (countdownTimer) clearInterval(countdownTimer);
+  const endTime = Date.now() + seconds * 1000;
+  function tick() {
+    const remain = Math.max(0, endTime - Date.now());
+    if (remain <= 0) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+      setSubmitting(false);
+      hideError();
+      return;
+    }
+    const m = Math.floor(remain / 60000);
+    const s = Math.floor((remain % 60000) / 1000);
+    showError(`❌ 登录失败次数过多，请 <span class="countdown">${m}分${s.toString().padStart(2,'0')}秒</span> 后再试`);
+    submitBtn.textContent = `等待 ${m}:${s.toString().padStart(2,'0')}`;
+  }
+  tick();
+  countdownTimer = setInterval(tick, 1000);
+}
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  error.style.display = 'none';
-  submitBtn.disabled = true;
-  submitBtn.textContent = '登录中...';
+  if (submitting) return;
+  hideError();
+  setSubmitting(true);
 
-  const username = document.getElementById('username').value;
-  const password = document.getElementById('password').value;
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
+  const remember = rememberInput.checked;
 
   try {
-    const resp = await fetch('/api/login', {
+    const resp = await fetch('/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ username, password })
+      credentials: 'include',  // 让 server 设置 HttpOnly cookie
+      body: JSON.stringify({ username, password, remember, next: nextUrl })
     });
 
-    const data = await resp.json();
-
-    if (data.success) {
-      // 设置 cookie 并跳转
-      document.cookie = `mavis_session=${data.session_id}; Path=/; Max-Age=${7*24*3600}; SameSite=Strict`;
-      window.location.href = '/';
-    } else {
-      throw new Error(data.error || '登录失败');
+    // 429 rate limited
+    if (resp.status === 429) {
+      const data = await resp.json().catch(() => ({}));
+      const retry = data.retry_after || 900;
+      startCountdown(retry);
+      return;
     }
+
+    const data = await resp.json().catch(() => ({}));
+
+    if (resp.ok && data.success) {
+      // server 已设置 HttpOnly cookie，只需跳转
+      submitBtn.textContent = '✅ 登录成功，跳转中...';
+      // 微小延迟让用户看到反馈
+      setTimeout(() => {
+        window.location.href = data.next || nextUrl;
+      }, 200);
+      return;
+    }
+
+    // 失败
+    setSubmitting(false);
+    passwordInput.select();
+    showError('❌ ' + (data.message || data.error || '登录失败'));
   } catch (e) {
-    error.textContent = '❌ ' + (e.message || '登录失败');
-    error.style.display = 'block';
-    submitBtn.disabled = false;
-    submitBtn.textContent = '登录';
+    setSubmitting(false);
+    showError('❌ 网络错误: ' + e.message);
   }
+});
+
+// Enter 键在 password 输入框直接提交
+passwordInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !submitting) form.requestSubmit();
 });
 </script>
 </body>

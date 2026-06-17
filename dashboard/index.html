@@ -356,7 +356,99 @@ async function refresh() {
 refresh();
 setInterval(refresh, 60000);  // 每 60 秒刷新
 </script>
+
+<!-- 顶部用户栏 (登出 + 当前用户) -->
+<style>
+.user-bar {
+  position: fixed; top: 12px; right: 16px; z-index: 100;
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  backdrop-filter: blur(8px);
+}
+.user-bar .avatar { font-size: 16px; }
+.user-bar .user { color: #60a5fa; font-weight: 500; }
+.user-bar .expires { color: #64748b; font-size: 11px; margin-left: 4px; }
+.user-bar .logout-btn {
+  background: #334155; color: #e2e8f0; border: none;
+  border-radius: 4px; padding: 4px 10px; font-size: 12px;
+  cursor: pointer; transition: background 0.2s;
+}
+.user-bar .logout-btn:hover { background: #ef4444; color: white; }
+.user-bar .refresh-btn {
+  background: #334155; color: #94a3b8; border: none;
+  border-radius: 4px; padding: 4px 8px; font-size: 12px;
+  cursor: pointer; transition: background 0.2s;
+}
+.user-bar .refresh-btn:hover { background: #475569; color: #e2e8f0; }
+</style>
+<div class="user-bar" id="userBar" style="display:none">
+  <span class="avatar">👤</span>
+  <span><span class="user" id="userName">—</span><span class="expires" id="userExpires"></span></span>
+  <button class="refresh-btn" id="refreshSessionBtn" title="延长登录">🔄 续期</button>
+  <button class="logout-btn" id="logoutBtn">登出</button>
+</div>
+
 <script>
+// 会话管理
+let currentUser = null;
+
+async function loadMe() {
+  try {
+    const r = await fetch('/api/me', { credentials: 'include' });
+    if (r.status === 401) {
+      window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname) + '&expired=1';
+      return;
+    }
+    if (!r.ok) return;
+    currentUser = await r.json();
+    document.getElementById('userName').textContent = currentUser.user;
+    const expiresAt = new Date(currentUser.expires_at);
+    const now = new Date();
+    const remainMs = expiresAt - now;
+    const remainMin = Math.floor(remainMs / 60000);
+    const remainHour = Math.floor(remainMin / 60);
+    const remainDay = Math.floor(remainHour / 24);
+    let remainText = '';
+    if (remainDay > 0) remainText = ` (剩 ${remainDay}天)`;
+    else if (remainHour > 0) remainText = ` (剩 ${remainHour}小时)`;
+    else if (remainMin > 0) remainText = ` (剩 ${remainMin}分)`;
+    else remainText = ' (即将过期)';
+    document.getElementById('userExpires').textContent = remainText;
+    document.getElementById('userBar').style.display = 'flex';
+  } catch (e) {
+    console.error('loadMe error:', e);
+  }
+}
+
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  if (!confirm('确定要登出？')) return;
+  try {
+    await fetch('/logout', { method: 'POST', credentials: 'include' });
+  } catch (e) {}
+  window.location.href = '/login?expired=1';
+});
+
+document.getElementById('refreshSessionBtn').addEventListener('click', async () => {
+  try {
+    const r = await fetch('/api/refresh', { method: 'POST', credentials: 'include' });
+    if (r.ok) {
+      loadMe();
+    }
+  } catch (e) {
+    console.error('refresh error:', e);
+  }
+});
+
+// 每 60 秒检查会话状态
+loadMe();
+setInterval(() => {
+  loadMe();
+}, 60000);
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch((e) => console.log('SW register failed:', e));
 }
