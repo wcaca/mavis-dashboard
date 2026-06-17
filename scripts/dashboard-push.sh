@@ -104,7 +104,7 @@ ensure_auth
 
 response=$(curl -s -b "$COOKIE_FILE" -X POST -H "Content-Type: application/json" \
   -d "$PAYLOAD" \
-  "$DASHBOARD_URL/publish" 2>&1)
+  "$DASHBOARD_URL/api/publish" 2>&1)
 
 if echo "$response" | grep -Eq '"success":[[:space:]]*true'; then
   echo "✅ 推送成功: [$TYPE] $MESSAGE"
