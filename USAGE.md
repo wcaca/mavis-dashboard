@@ -32,8 +32,17 @@ URL:      http://dashboard.noteverse.space:8443/
 
 - 算法: `sha256(PASSWORD_SALT + password)`，其中 `PASSWORD_SALT = "mavis-dashboard-v1"`
 - 密码 hash 不存数据库，每次登录时实时计算
-- 会话: HttpOnly cookie `mavis_session`，TTL 7 天
-- 登出: `POST /logout`
+- **记住我** (7 天 vs 30 天 cookie)
+- **失败次数限制**: 5 次 / 15 分钟（按 IP）
+- **错误信息具体化**: `BAD_USERNAME` / `BAD_PASSWORD` / `RATE_LIMITED`
+- **Session 持久化**: `/state/sessions.json`（server 重启不丢登录）
+- **活动续期**: 剩 50% 时间时主动刷新 last_seen
+- **HttpOnly + SameSite=Strict** cookie 防止 XSS
+- **支持 next 重定向**: `/login?next=/api/foo` 登录后跳回原页面
+- **限速时返回 `retry_after`**，前端做倒计时
+- **未登录访问页面**: 302 → `/login?next=...&expired=1`
+- **未登录访问 API**: 401 JSON `{error, code: "AUTH_REQUIRED"}`
+- **主动续期 API**: `POST /api/refresh`
 
 ### 改密码
 
@@ -71,15 +80,53 @@ bash scripts/reset-password.sh "new-password"
 
 | Method | Path | Body | 说明 |
 |--------|------|------|------|
-| POST   | `/login` | `{username, password}` | 验证后 set cookie |
+| POST   | `/login` | `{username, password, remember?, next?}` | 验证后 set cookie |
 | POST   | `/logout` | — | 清 cookie |
+| GET    | `/api/me` | — | 当前用户信息（剩余时间、是否记住我）|
+| POST   | `/api/refresh` | — | 主动续期 session（重置 token + TTL）|
 
 **登录示例**:
 ```bash
+# 不勾 remember (7天)
 curl -c cookies.txt -X POST http://localhost:8443/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"YOUR_PASSWORD"}'
-# 返回 {"status":"ok","user":"admin"} + Set-Cookie
+
+# 勾 remember (30天)
+curl -c cookies.txt -X POST http://localhost:8443/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"YOUR_PASSWORD","remember":true}'
+
+# 登录后跳转到 next (默认 /)
+curl -c cookies.txt -X POST http://localhost:8443/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"YOUR_PASSWORD","next":"/api/foo"}'
+```
+
+**成功响应**:
+```json
+{
+  "success": true,
+  "user": "admin",
+  "remember": true,
+  "ttl": 2592000,
+  "expires_in": 2592000,
+  "next": "/"
+}
+```
+
+**错误响应**:
+```json
+// 401 - 用户名或密码错误
+{"error":"invalid_credentials","code":"BAD_PASSWORD","message":"用户名或密码错误"}
+
+// 429 - 失败次数过多
+{
+  "error":"too_many_attempts",
+  "code":"RATE_LIMITED",
+  "message":"登录失败次数过多，请 15 分钟后再试",
+  "retry_after": 900
+}
 ```
 
 ### 推送 / 接收事件（需要登录）
