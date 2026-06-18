@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>项目进展 · Mavis Agent Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="theme-color" content="#3b82f6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style"="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mavis Projects">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📦</text></svg>">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📦</text></svg>">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  h1 { color: #60a5fa; margin-bottom: 8px; font-size: 28px; }
+  h2 { color: #93c5fd; margin: 24px 0 12px; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+  h2 .badge { font-size: 12px; color: #64748b; font-weight: normal; }
+  .subtitle { color: #94a3b8; font-size: 14px; margin-bottom: 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .card h3 { font-size: 12px; color: #94a3b8; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .value { font-size: 30px; font-weight: 600; color: #f1f5f9; }
+  .value.ok { color: #4ade80; }
+  .value.warn { color: #fbbf24; }
+  .value.crit { color: #f87171; }
+  .meta { color: #64748b; font-size: 12px; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #334155; font-size: 14px; }
+  th { color: #94a3b8; font-weight: 500; font-size: 12px; text-transform: uppercase; position: sticky; top: 0; background: #1e293b; }
+  tr:hover td { background: rgba(96, 165, 250, 0.05); }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; }
+  .pill.private { background: #4c1d95; color: #c4b5fd; }
+  .pill.public { background: #14532d; color: #4ade80; }
+  .pill.archived { background: #374151; color: #9ca3af; }
+  .pill.fork { background: #1e3a8a; color: #93c5fd; }
+  .pill.commit { background: #14532d; color: #4ade80; }
+  .pill.issue { background: #7f1d1d; color: #fca5a5; }
+  .pill.pr { background: #581c87; color: #d8b4fe; }
+  .pill.draft { background: #78350f; color: #fcd34d; }
+  .pill.lang { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+  .refresh { color: #64748b; font-size: 12px; margin-top: 24px; text-align: center; }
+  .err { color: #f87171; padding: 20px; }
+  .loading { color: #94a3b8; padding: 40px; text-align: center; }
+  .repo-name { font-weight: 600; color: #f1f5f9; }
+  .repo-name a { color: inherit; text-decoration: none; }
+  .repo-name a:hover { color: #60a5fa; }
+  .repo-desc { color: #94a3b8; font-size: 12px; margin-top: 2px; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .commit-msg { color: #cbd5e1; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+  .commit-sha { color: #64748b; font-family: monospace; font-size: 12px; margin-left: 6px; }
+  .time-ago { color: #64748b; font-size: 12px; }
+  .lang-bar { display: flex; height: 24px; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+  .lang-bar > div { display: flex; align-items: center; justify-content: center; font-size: 11px; color: #fff; min-width: 32px; }
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .filter-bar input, .filter-bar select {
+    background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
+    padding: 6px 10px; border-radius: 6px; font-size: 13px; outline: none;
+  }
+  .filter-bar input:focus, .filter-bar select:focus { border-color: #60a5fa; }
+  .filter-bar label { color: #94a3b8; font-size: 13px; display: flex; align-items: center; gap: 4px; }
+  .user-link { color: #60a5fa; text-decoration: none; }
+  .user-link:hover { text-decoration: underline; }
+  .stale-1d { color: #f59e0b; }
+  .stale-7d { color: #f87171; }
+  .stale-ok { color: #4ade80; }
+</style>
+</head>
+<body>
+<h1>📦 项目进展</h1>
+
+<div class="subtitle">
+  <a href="https://github.com/wcaca" class="user-link">@wcaca</a> ·
+  <span id="lastUpdate">never</span> ·
+  <a href="./" style="color:#64748b;text-decoration:none;">← 系统状态</a>
+</div>
+
+<div id="loading" class="loading">⏳ 加载中（首次会慢一点，5 分钟缓存）...</div>
+<div id="error" class="err" style="display:none;"></div>
+<div id="content" style="display:none;">
+
+  <div class="grid" id="statsGrid"></div>
+
+  <h2>📂 项目列表 <span class="badge" id="repoCount"></span></h2>
+  <div class="card">
+    <div class="filter-bar">
+      <input type="text" id="searchInput" placeholder="搜索仓库名/描述..." style="flex:1;min-width:200px;">
+      <label><input type="checkbox" id="filterPrivate" checked> 私人</label>
+      <label><input type="checkbox" id="filterPublic" checked> 公开</label>
+      <label><input type="checkbox" id="filterActive"> 仅近 7 天活跃</label>
+      <select id="sortBy">
+        <option value="pushed">最近推送</option>
+        <option value="updated">最近更新</option>
+        <option value="name">名称</option>
+        <option value="stars">⭐ 最多</option>
+      </select>
+    </div>
+    <div style="max-height: 700px; overflow-y: auto;">
+      <table>
+        <thead><tr>
+          <th>项目</th>
+          <th>语言</th>
+          <th>⭐</th>
+          <th>Open</th>
+          <th>最近活动</th>
+        </tr></thead>
+        <tbody id="reposTable"><tr><td colspan="5">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2>🔥 最近活动 <span class="badge" id="activityCount"></span></h2>
+  <div class="card">
+    <div style="max-height: 500px; overflow-y: auto;">
+      <table>
+        <thead><tr><th>类型</th><th>项目</th><th>内容</th><th>时间</th></tr></thead>
+        <tbody id="activityTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2>💻 语言分布</h2>
+  <div class="card" id="langCard"></div>
+
+  <div class="refresh">
+    ⏱️ 每 5 分钟自动刷新 · 最后刷新: <span id="refreshTime">--</span> ·
+    cache: <span id="cacheStats">--</span>
+  </div>
+</div>
+
+<script>
+const API_URL = './api/projects';
+const REFRESH_MS = 5 * 60 * 1000;  // 5 分钟
+
+let rawData = null;
+let filteredRepos = [];
+
+function formatTime(iso) {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  if (diff < 86400 * 7) return `${Math.floor(diff/86400)}d ago`;
+  return d.toLocaleDateString();
+}
+
+function timeClass(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const diff = (new Date() - d) / 1000;
+  if (diff < 86400) return 'stale-ok';
+  if (diff < 86400 * 7) return '';
+  if (diff < 86400 * 30) return 'stale-1d';
+  return 'stale-7d';
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function langColor(lang) {
+  const colors = {
+    'Python': '#3572A5', 'JavaScript': '#f1e05a', 'TypeScript': '#2b7489',
+    'Shell': '#89e051', 'HTML': '#e34c26', 'CSS': '#563d7c', 'Vue': '#41b883',
+    'Go': '#00ADD8', 'Rust': '#dea584', 'Java': '#b07219', 'C++': '#f34b7d',
+    'C': '#555555', 'Ruby': '#701516', 'PHP': '#4F5D95', 'Swift': '#ffac45',
+    'Kotlin': '#F18E33', 'Dart': '#00B4AB', 'Lua': '#000080',
+  };
+  return colors[lang] || '#64748b';
+}
+
+function renderStats(s) {
+  const grid = document.getElementById('statsGrid');
+  const cards = [
+    { label: '总仓库', value: s.total_repos, meta: `${s.private_repos} 私人 · ${s.public_repos} 公开` },
+    { label: '总 ⭐', value: s.total_stars, meta: `${s.total_forks} forks` },
+    { label: 'Commits 今日', value: s.commits_today, cls: s.commits_today > 0 ? 'ok' : '', meta: `7 天 ${s.commits_7d}` },
+    { label: '活跃 repo 7d', value: s.active_repos_7d, meta: `30 天 ${s.active_repos_30d}`, cls: s.active_repos_7d > 0 ? 'ok' : '' },
+    { label: 'Open PR', value: s.open_prs, cls: s.open_prs > 0 ? 'warn' : '', meta: '等 review' },
+    { label: 'Open Issues', value: s.open_issues, cls: s.open_issues > 0 ? 'warn' : '', meta: '需处理' },
+  ];
+  grid.innerHTML = cards.map(c =>
+    `<div class="card">
+      <h3>${c.label}</h3>
+      <div class="value ${c.cls || ''}">${c.value}</div>
+      <div class="meta">${c.meta}</div>
+    </div>`
+  ).join('');
+}
+
+function renderRepos() {
+  const tbody = document.getElementById('reposTable');
+  if (filteredRepos.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;">无匹配仓库</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filteredRepos.map(r => {
+    const privacyPill = r.private
+      ? '<span class="pill private">🔒 private</span>'
+      : '<span class="pill public">🌐 public</span>';
+    const lastActivity = r.activity && r.activity[0];
+    const lastCell = lastActivity
+      ? `<a href="${escapeHtml(lastActivity.url)}" target="_blank" style="text-decoration:none;">
+          <span class="pill ${lastActivity.type}">${lastActivity.type}</span>
+          <span class="commit-msg">${escapeHtml(lastActivity.title)}</span>
+        </a><div class="time-ago ${timeClass(lastActivity.date)}">${formatTime(lastActivity.date)}</div>`
+      : '<span class="time-ago">无活动</span>';
+    const langPill = r.language
+      ? `<span class="pill lang" style="border-color:${langColor(r.language)};">${escapeHtml(r.language)}</span>`
+      : '-';
+    return `<tr>
+      <td>
+        <div class="repo-name">
+          <a href="${escapeHtml(r.html_url)}" target="_blank">${escapeHtml(r.name)}</a>
+          ${privacyPill}
+          ${r.archived ? '<span class="pill archived">archived</span>' : ''}
+          ${r.fork ? '<span class="pill fork">fork</span>' : ''}
+        </div>
+        ${r.description ? `<div class="repo-desc">${escapeHtml(r.description)}</div>` : ''}
+      </td>
+      <td>${langPill}</td>
+      <td>${r.stars}</td>
+      <td>${r.open_issues > 0 ? `<span style="color:#fbbf24">${r.open_issues}</span>` : r.open_issues}</td>
+      <td>${lastCell}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderActivity(repos) {
+  const tbody = document.getElementById('activityTable');
+  // 拉所有 repo 的 activity，合并，按时间倒序
+  const all = [];
+  for (const r of repos) {
+    for (const a of (r.activity || [])) {
+      all.push({ ...a, repo: r.name, repo_url: r.html_url });
+    }
+  }
+  all.sort((x, y) => (y.date || '').localeCompare(x.date || ''));
+  document.getElementById('activityCount').textContent = `共 ${all.length} 条`;
+
+  if (all.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#94a3b8;">暂无活动</td></tr>';
+    return;
+  }
+  tbody.innerHTML = all.slice(0, 50).map(a =>
+    `<tr>
+      <td><span class="pill ${a.type}${a.draft ? ' draft' : ''}">${a.type}</span></td>
+      <td><a href="${escapeHtml(a.repo_url)}" target="_blank" class="user-link">${escapeHtml(a.repo)}</a></td>
+      <td><a href="${escapeHtml(a.url)}" target="_blank" style="color:#cbd5e1;text-decoration:none;">${escapeHtml(a.title)}</a></td>
+      <td class="time-ago ${timeClass(a.date)}">${formatTime(a.date)}</td>
+    </tr>`
+  ).join('');
+}
+
+function renderLangs(languages) {
+  const card = document.getElementById('langCard');
+  const total = Object.values(languages).reduce((a, b) => a + b, 0);
+  if (total === 0) {
+    card.innerHTML = '<div class="loading">暂无语言数据</div>';
+    return;
+  }
+  const bar = Object.entries(languages).map(([lang, count]) => {
+    const pct = (count / total * 100).toFixed(1);
+    return `<div style="background:${langColor(lang)}; width:${pct}%;" title="${lang}: ${count} (${pct}%)">${lang} ${pct}%</div>`;
+  }).join('');
+  card.innerHTML = `<div class="lang-bar">${bar}</div>
+    <div style="margin-top:12px;font-size:13px;color:#94a3b8;">
+      ${Object.entries(languages).map(([l, c]) => `<span class="pill lang" style="margin-right:6px;border-color:${langColor(l)}">${l}: ${c}</span>`).join('')}
+    </div>`;
+}
+
+function applyFilters() {
+  if (!rawData) return;
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  const showPrivate = document.getElementById('filterPrivate').checked;
+  const showPublic = document.getElementById('filterPublic').checked;
+  const onlyActive = document.getElementById('filterActive').checked;
+  const sortBy = document.getElementById('sortBy').value;
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
+
+  filteredRepos = rawData.repos.filter(r => {
+    if (!showPrivate && r.private) return false;
+    if (!showPublic && !r.private) return false;
+    if (onlyActive && (r.pushed_at || '') < sevenDaysAgo) return false;
+    if (search) {
+      const s = search;
+      if (!(r.name.toLowerCase().includes(s) || (r.description || '').toLowerCase().includes(s))) return false;
+    }
+    return true;
+  });
+
+  filteredRepos.sort((a, b) => {
+    if (sortBy === 'name') return a.name.localeCompare(b.name);
+    if (sortBy === 'stars') return (b.stars || 0) - (a.stars || 0);
+    if (sortBy === 'updated') return (b.updated_at || '').localeCompare(a.updated_at || '');
+    return (b.pushed_at || '').localeCompare(a.pushed_at || '');
+  });
+
+  document.getElementById('repoCount').textContent = `共 ${filteredRepos.length} / ${rawData.repos.length}`;
+  renderRepos();
+}
+
+function render(data) {
+  rawData = data;
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('error').style.display = 'none';
+  document.getElementById('content').style.display = 'block';
+
+  document.getElementById('lastUpdate').textContent = formatTime(data.generated_at);
+  renderStats(data.stats);
+  applyFilters();
+  renderActivity(data.repos);
+  renderLangs(data.stats.languages || {});
+  document.getElementById('cacheStats').textContent =
+    `entries=${data.cache.entries} hits=${data.cache.hits} misses=${data.cache.misses}`;
+}
+
+async function fetchData() {
+  try {
+    const resp = await fetch(API_URL + '?t=' + Date.now());
+    if (resp.status === 401) {
+      window.location.href = '/login?next=/projects.html';
+      return;
+    }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    render(data);
+  } catch (e) {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('error').style.display = 'block';
+    document.getElementById('error').innerHTML = '❌ 加载失败: ' + escapeHtml(e.message) +
+      '<br><br><button onclick="fetchData()" style="background:#334155;color:#e2e8f0;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;">重试</button>';
+  }
+}
+
+// 事件绑定
+['searchInput', 'filterPrivate', 'filterPublic', 'filterActive', 'sortBy'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('input', applyFilters);
+  if (el && el.tagName === 'SELECT') el.addEventListener('change', applyFilters);
+  if (el && el.type === 'checkbox') el.addEventListener('change', applyFilters);
+});
+
+document.getElementById('refreshTime').textContent = new Date().toLocaleTimeString();
+fetchData();
+setInterval(fetchData, REFRESH_MS);
+</script>
+</body>
+</html>
