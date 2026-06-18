@@ -303,8 +303,9 @@ def clear_session_cookie(handler):
 
 
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
-    # Cloudflare 期望 HTTP/1.1，否则会报 'malformed MIME header'
-    # (cf tunnel 把 HTTP/1.0 当 broken MIME 处理)
+    # Python stdlib 配合 cloudflared tunnel 的最佳实践：
+    # - HTTP/1.1（CF 期望）
+    # - 强制 Connection: close（避免 stdlib 不自动加 Content-Length 导致 CF 解析失败）
     protocol_version = 'HTTP/1.1'
     def log_message(self, format, *args):
         pass
@@ -313,6 +314,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        # 强制 Connection: close — 避免 HTTP/1.1 keep-alive 模式下
+        # Python stdlib 不自动加 Content-Length/chunked encoding，
+        # cloudflared 解析会报 'malformed MIME header: missing colon'
+        if not self.headers.get('Connection'):
+            self.send_header('Connection', 'close')
         super().end_headers()
 
     def do_OPTIONS(self):
