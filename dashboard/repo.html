@@ -231,7 +231,14 @@ function renderPills(repo) {
 }
 
 function renderToolbar(repo) {
+  let deployBtn = '';
+  if (repo.deployment_url) {
+    deployBtn = `<a href="${escapeHtml(repo.deployment_url)}" target="_blank" class="btn btn-primary" style="background:#16a34a;border-color:#22c55e;">🌐 打开部署（${escapeHtml(repo.deployment_url.replace(/^https?:\/\//, '').replace(/\/$/, ''))}）</a>`;
+  } else {
+    deployBtn = `<span class="btn" style="opacity:0.5;cursor:default;background:transparent;border:1px dashed #475569;color:#64748b;">🌐 未配置部署 URL</span>`;
+  }
   document.getElementById('toolbar').innerHTML = `
+    ${deployBtn}
     <a href="${escapeHtml(repo.html_url)}" target="_blank" class="btn btn-primary">📂 在 GitHub 打开</a>
     <button class="btn" onclick="copyToClipboard('${escapeHtml(repo.clone_url)}')">📋 复制 HTTPS clone</button>
     <button class="btn" onclick="copyToClipboard('${escapeHtml(repo.ssh_url)}')">📋 复制 SSH</button>

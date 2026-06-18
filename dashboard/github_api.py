@@ -11,6 +11,7 @@ github_api.py - GitHub API 客户端 + 内存缓存
   - 5 分钟内存缓存（避免 GitHub rate limit）
   - 失败 retry（最多 2 次）
   - 异常隔离（单个 repo 失败不影响整体）
+  - 部署 URL 映射（从 state/deployments.json 读取）
 """
 import os
 import json
@@ -24,6 +25,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Dict, List, Any
 
 
+# Deployment mappings 路径
+_DEPLOYMENTS_PATH_CANDIDATES = [
+    os.environ.get("DEPLOYMENTS_FILE", ""),
+    "/opt/mavis-dashboard/state/deployments.json",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "state", "deployments.json"),
+    os.path.join(os.getcwd(), "state", "deployments.json"),
+]
+
+
 GITHUB_API = "https://api.github.com"
 DEFAULT_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 CACHE_TTL = int(os.environ.get("GITHUB_CACHE_TTL", "300"))  # 5 分钟
@@ -35,6 +45,54 @@ MAX_WORKERS = 6
 def log(msg):
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
     print(f"[{ts}] [github_api] {msg}", flush=True)
+
+
+# ============ Deployment mappings ============
+
+_deployments_cache: Optional[Dict[str, str]] = None
+_deployments_mtime: float = 0
+_deployments_lock = threading.Lock()
+
+
+def _find_deployments_file() -> Optional[str]:
+    for p in _DEPLOYMENTS_PATH_CANDIDATES:
+        if p and os.path.isfile(p):
+            return p
+    return None
+
+
+def _load_deployments() -> Dict[str, str]:
+    """加载部署映射表，hot reload (修改 mtime 后重读)"""
+    global _deployments_cache, _deployments_mtime
+    with _deployments_lock:
+        path = _find_deployments_file()
+        if not path:
+            _deployments_cache = {}
+            _deployments_mtime = 0
+            return {}
+        try:
+            mtime = os.path.getmtime(path)
+            if _deployments_cache is not None and mtime == _deployments_mtime:
+                return _deployments_cache
+            with open(path) as f:
+                data = json.load(f)
+            # 过滤 _ 开头的 meta key
+            result = {k: v for k, v in data.items() if not k.startswith("_") and isinstance(v, str)}
+            _deployments_cache = result
+            _deployments_mtime = mtime
+            log(f"加载部署映射 {len(result)} 条 ({path})")
+            return result
+        except Exception as e:
+            log(f"⚠️  加载 deployments 失败: {e}")
+            return _deployments_cache or {}
+
+
+def get_deployment_url(full_name: str) -> Optional[str]:
+    """查 repo 的部署 URL，full_name 严格小写"""
+    if not full_name:
+        return None
+    mappings = _load_deployments()
+    return mappings.get(full_name.lower())
 
 
 class Cache:
@@ -292,6 +350,7 @@ class GitHubClient:
                 "topics": repo.get("topics", []),
                 "license": (repo.get("license") or {}).get("spdx_id", "") if repo.get("license") else "",
                 "homepage": repo.get("homepage", ""),
+                "deployment_url": get_deployment_url(repo.get("full_name", full_name)),
             },
             "commits": commit_items,
             "issues": issue_items,
@@ -465,6 +524,7 @@ class GitHubClient:
                 "created_at": r.get("created_at", ""),
                 "topics": r.get("topics", [])[:5],
                 "size_kb": r.get("size", 0),
+                "deployment_url": get_deployment_url(full_name),
                 "activity": activity,
             }
 
