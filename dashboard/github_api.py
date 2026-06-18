@@ -556,9 +556,9 @@ class GitHubClient:
         except Exception:
             user_events = []
 
-        # 从 user_events 算 commits 今日/7天、PR 数、issue 数
-        # user_events 是 30 条按时间倒序的事件，可能不够覆盖所有，
-        # 但作为“快”指标足够
+        # 从 user_events 算 push 今日/7天、PR 数、issue 数
+        # 注意：GitHub Events API 不返回 PushEvent 的 commits 详情，
+        # 所以“今日 push 数”是 30 条最近事件里 PushEvent 的个数（近似）。
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         seven_days_ago_dt = datetime.now(timezone.utc) - timedelta(days=7)
         for ev in (user_events or []):
@@ -571,11 +571,10 @@ class GitHubClient:
             except Exception:
                 continue
             if ev_type == "PushEvent":
-                commits_in = (ev.get("payload") or {}).get("commits") or []
                 if created.startswith(today_str):
-                    commits_today += len(commits_in)
+                    commits_today += 1
                 if ev_dt > seven_days_ago_dt:
-                    commits_7d += len(commits_in)
+                    commits_7d += 1
             elif ev_type == "PullRequestEvent" and (ev.get("payload") or {}).get("action") == "opened":
                 open_prs_total += 1
             elif ev_type == "IssuesEvent" and (ev.get("payload") or {}).get("action") == "opened":
