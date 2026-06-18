@@ -452,6 +452,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     # ---------- POST ----------
 
     def do_POST(self):
+        from urllib.parse import urlparse
+        _path = urlparse(self.path).path
         ip = get_client_ip(self)
 
         # 登录（公开）
