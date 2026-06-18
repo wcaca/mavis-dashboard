@@ -13,6 +13,7 @@ dashboard-server.py - Mavis Agent Dashboard HTTP server
   - GET  /api/events    → SSE 实时推送
   - POST /api/publish   → 推送事件（agent 调用）
   - GET  /api/history   → 推送历史
+  - GET  /api/projects  → GitHub 项目进展 dashboard（v25cf 新增）
   - GET  /health        → 服务健康（公开）
 """
 import http.server
@@ -27,6 +28,14 @@ import hashlib
 import secrets
 from datetime import datetime, timezone, timedelta
 from http.cookies import SimpleCookie
+
+# GitHub API 客户端（项目进展 dashboard）
+try:
+    from github_api import get_client as get_github_client
+    GITHUB_API_AVAILABLE = True
+except ImportError as e:
+    GITHUB_API_AVAILABLE = False
+    _GH_IMPORT_ERR = str(e)
 
 PORT = int(os.environ.get('PORT', 8765))
 
@@ -309,8 +318,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     # ---------- GET ----------
 
     def do_GET(self):
+        # 解析 path（去掉 query string，所有路由都用 _path 比较）
+        from urllib.parse import urlparse
+        _path = urlparse(self.path).path
+
         # 公开：/health
-        if self.path == '/health':
+        if _path == '/health':
             self.send_json({
                 "status": "ok",
                 "subscribers": len(subscribers),
@@ -319,8 +332,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             })
             return
 
-        # 公开：登录页
-        if self.path == '/login' or self.path == '/login.html':
+        # 公开：登录页（_path 已在 do_GET 开头定义）
+        if _path == '/login' or _path == '/login.html':
             self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'login.html'), 'text/html; charset=utf-8')
             return
 
@@ -336,12 +349,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         # 鉴权 gate
         sess, new_token = check_auth(self)
         if not sess:
-            # 区分 API 和页面请求
-            if self.path.startswith('/api/') or self.path in ('/events', '/history', '/publish'):
+            # 区分 API 和页面请求（用 path 不带 query）
+            if _path.startswith('/api/') or _path in ('/events', '/history', '/publish'):
                 self.send_json({"error": "unauthorized", "code": "AUTH_REQUIRED"}, status=401)
             else:
                 # 浏览器访问页面 → 跳 login.html（带 next 参数）
-                self.redirect(f'/login?next={self.path}')
+                self.redirect(f'/login?next={_path}')
             return
 
         # 续期 cookie
@@ -349,7 +362,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             set_session_cookie(self, new_token, sess['ttl'])
 
         # API 路由
-        if self.path == '/api/me':
+        if _path == '/api/me':
             self.send_json({
                 "user": sess['user'],
                 "logged_in_at": datetime.fromtimestamp(sess['created'], timezone.utc).isoformat(),
@@ -360,7 +373,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             })
             return
 
-        if self.path == '/api/state' or self.path.startswith('/api/state/'):
+        if _path == '/api/state' or self.path.startswith('/api/state/'):
             rel = self.path[len('/api/'):]   # state/xxx
             full = os.path.join(ROOT, rel)
             if os.path.isfile(full):
@@ -369,16 +382,28 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"error": "not found"}, status=404)
             return
 
-        if self.path == '/api/events':
+        if _path == '/api/events':
             self.handle_sse()
             return
 
-        if self.path == '/api/history':
+        if _path == '/api/history':
             self.send_json({"history": list(push_history)})
             return
 
-        if self.path == '/api/agent-memory':
+        if _path == '/api/agent-memory':
             self.handle_agent_memory()
+            return
+
+        if _path == '/api/projects' or _path == '/api/projects/':
+            self.handle_projects()
+            return
+
+        if _path == '/api/projects/cache/stats':
+            self.handle_projects_cache_stats()
+            return
+
+        if _path == '/api/projects/cache/clear':
+            self.handle_projects_cache_clear()
             return
 
         # 兼容老路径（/state/*, /events, /history）— 同样鉴权后响应
@@ -390,15 +415,15 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 return
             self.send_error(404, "state file not found")
 
-        elif self.path == '/events':
+        elif _path == '/events':
             self.handle_sse()
             return
 
-        elif self.path == '/history':
+        elif _path == '/history':
             self.send_json({"history": list(push_history)})
             return
 
-        elif self.path == '/status.json':
+        elif _path == '/status.json':
             try:
                 with open('/workspace/agent-memory/state/mavis-status.json') as f:
                     data = json.load(f)
@@ -408,8 +433,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # 静态文件
-        if self.path == '/' or self.path == '/index.html':
+        if _path == '/' or _path == '/index.html':
             self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'index.html'), 'text/html; charset=utf-8')
+            return
+
+        # 项目进展页面（v25cf 新增）
+        if _path == '/projects' or _path == '/projects.html':
+            self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'projects.html'), 'text/html; charset=utf-8')
             return
 
         # 其他静态资源（dashboard 下的所有文件）
@@ -422,10 +452,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     # ---------- POST ----------
 
     def do_POST(self):
+        from urllib.parse import urlparse
+        _path = urlparse(self.path).path
         ip = get_client_ip(self)
 
         # 登录（公开）
-        if self.path == '/login':
+        if _path == '/login':
             # 限速检查
             if is_rate_limited(ip):
                 retry_after = LOGIN_WINDOW
@@ -487,7 +519,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # 登出
-        if self.path == '/logout':
+        if _path == '/logout':
             cookie_str = self.headers.get('Cookie', '')
             cookie = SimpleCookie(cookie_str)
             token_cookie = cookie.get(SESSION_COOKIE)
@@ -499,7 +531,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # 主动续期
-        if self.path == '/api/refresh':
+        if _path == '/api/refresh':
             sess, new_token = check_auth(self)
             if not sess:
                 self.send_json({"error": "unauthorized"}, status=401)
@@ -521,7 +553,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         if new_token:
             set_session_cookie(self, new_token, sess['ttl'])
 
-        if self.path == '/api/publish':
+        if _path == '/api/publish':
             self.handle_publish()
             return
 
@@ -690,6 +722,53 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': str(e)}, status=500)
 
 
+    # ---------- GitHub Projects 端点 ----------
+
+    def handle_projects(self):
+        """返回项目进展 dashboard 数据"""
+        if not GITHUB_API_AVAILABLE:
+            self.send_json({
+                "error": "github_api module not available",
+                "detail": _GH_IMPORT_ERR,
+            }, status=500)
+            return
+        try:
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            username = (qs.get('username', [None]) or [None])[0]
+            include_forks = (qs.get('include_forks', ['false'])[0].lower() in ('1', 'true', 'yes'))
+
+            client = get_github_client()
+            data = client.get_dashboard_data(
+                username=username,
+                include_forks=include_forks,
+            )
+            self.send_json(data)
+        except Exception as e:
+            log(f"❌ /api/projects 失败: {e}")
+            self.send_json({"error": str(e)}, status=500)
+
+    def handle_projects_cache_stats(self):
+        if not GITHUB_API_AVAILABLE:
+            self.send_json({"error": "not available"}, status=500)
+            return
+        try:
+            self.send_json(get_github_client().cache.stats())
+        except Exception as e:
+            self.send_json({"error": str(e)}, status=500)
+
+    def handle_projects_cache_clear(self):
+        if not GITHUB_API_AVAILABLE:
+            self.send_json({"error": "not available"}, status=500)
+            return
+        try:
+            client = get_github_client()
+            # 重置缓存对象
+            client.cache = type(client.cache)(ttl=client.cache.ttl)
+            self.send_json({"ok": True, "message": "cache cleared"})
+        except Exception as e:
+            self.send_json({"error": str(e)}, status=500)
+
     def handle_publish(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -733,6 +812,8 @@ def main():
     log(f"   SSE: http://localhost:{PORT}/api/events")
     log(f"   Publish: POST http://localhost:{PORT}/api/publish")
     log(f"   Health: http://localhost:{PORT}/health")
+    log(f"   Projects: http://localhost:{PORT}/api/projects")
+    log(f"   GitHub API: {'✓' if GITHUB_API_AVAILABLE else '✗ ' + _GH_IMPORT_ERR}")
 
     use_ssl = bool(os.environ.get("ENABLE_SSL") == "1" and SSL_CERT and SSL_KEY
                    and os.path.exists(SSL_CERT) and os.path.exists(SSL_KEY))
