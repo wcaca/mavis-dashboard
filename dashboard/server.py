@@ -407,6 +407,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_projects_cache_clear()
             return
 
+        # 单个 repo 详情（v25cg 新增）
+        if _path.startswith('/api/repos/') or _path == '/api/repos':
+            self.handle_repo_detail()
+            return
+
         # 兼容老路径（/state/*, /events, /history）— 同样鉴权后响应
         if self.path.startswith('/state/'):
             rel = self.path[1:]
@@ -774,6 +779,43 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "message": "cache cleared"})
         except Exception as e:
             self.send_json({"error": str(e)}, status=500)
+
+    def handle_repo_detail(self):
+        """返回单个 repo 详情 + commits/issues/PRs
+        URL: /api/repos/<full_name>  其中 <full_name> 可包含 / 用 url encode
+        也支持 /api/repos?repo=<name> 简化
+        """
+        if not GITHUB_API_AVAILABLE:
+            self.send_json({
+                "error": "github_api module not available",
+                "detail": _GH_IMPORT_ERR,
+            }, status=500)
+            return
+        from urllib.parse import urlparse, parse_qs, unquote
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        try:
+            limit = int((qs.get('limit', ['20'])[0]))
+        except (ValueError, TypeError):
+            limit = 20
+
+        # 从 path 拿 repo name：/api/repos/<name>
+        parts = parsed.path.split('/api/repos/', 1)
+        if len(parts) == 2 and parts[1]:
+            repo_name = unquote(parts[1].rstrip('/'))
+        else:
+            repo_name = (qs.get('repo', [None]) or [None])[0]
+        if not repo_name:
+            self.send_json({"error": "repo name required", "hint": "用 /api/repos/<name> 或 /api/repos?repo=<name>"}, status=400)
+            return
+
+        try:
+            client = get_github_client()
+            data = client.get_repo_full(repo_name, activity_limit=limit)
+            self.send_json(data)
+        except Exception as e:
+            log(f"❌ /api/repos/{repo_name} 失败: {e}")
+            self.send_json({"error": str(e), "repo": repo_name}, status=500)
 
     def handle_publish(self):
         try:
