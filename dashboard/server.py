@@ -525,8 +525,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             # 成功
             record_attempt(ip, True)
             token, ttl = create_session(username, remember)
-            self.send_response(200)
-            set_session_cookie(self, token, ttl)
+            set_session_cookie(self, token, ttl)  # 必须在 send_response 前
             self.send_json({
                 "success": True,
                 "user": username,
@@ -545,8 +544,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             token_cookie = cookie.get(SESSION_COOKIE)
             if token_cookie:
                 destroy_session(token_cookie.value)
-            self.send_response(200)
-            clear_session_cookie(self)
+            clear_session_cookie(self)  # 必须在 send_response 前
             self.send_json({"success": True, "message": "已登出"})
             return
 
