@@ -319,7 +319,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         # 公开：/health
-        if self.path == '/health':
+        if _path == '/health':
             self.send_json({
                 "status": "ok",
                 "subscribers": len(subscribers),
@@ -360,7 +360,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             set_session_cookie(self, new_token, sess['ttl'])
 
         # API 路由
-        if self.path == '/api/me':
+        if _path == '/api/me':
             self.send_json({
                 "user": sess['user'],
                 "logged_in_at": datetime.fromtimestamp(sess['created'], timezone.utc).isoformat(),
@@ -371,7 +371,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             })
             return
 
-        if self.path == '/api/state' or self.path.startswith('/api/state/'):
+        if _path == '/api/state' or self.path.startswith('/api/state/'):
             rel = self.path[len('/api/'):]   # state/xxx
             full = os.path.join(ROOT, rel)
             if os.path.isfile(full):
@@ -380,27 +380,27 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"error": "not found"}, status=404)
             return
 
-        if self.path == '/api/events':
+        if _path == '/api/events':
             self.handle_sse()
             return
 
-        if self.path == '/api/history':
+        if _path == '/api/history':
             self.send_json({"history": list(push_history)})
             return
 
-        if self.path == '/api/agent-memory':
+        if _path == '/api/agent-memory':
             self.handle_agent_memory()
             return
 
-        if self.path == '/api/projects' or self.path == '/api/projects/':
+        if _path == '/api/projects' or _path == '/api/projects/':
             self.handle_projects()
             return
 
-        if self.path == '/api/projects/cache/stats':
+        if _path == '/api/projects/cache/stats':
             self.handle_projects_cache_stats()
             return
 
-        if self.path == '/api/projects/cache/clear':
+        if _path == '/api/projects/cache/clear':
             self.handle_projects_cache_clear()
             return
 
@@ -413,15 +413,15 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 return
             self.send_error(404, "state file not found")
 
-        elif self.path == '/events':
+        elif _path == '/events':
             self.handle_sse()
             return
 
-        elif self.path == '/history':
+        elif _path == '/history':
             self.send_json({"history": list(push_history)})
             return
 
-        elif self.path == '/status.json':
+        elif _path == '/status.json':
             try:
                 with open('/workspace/agent-memory/state/mavis-status.json') as f:
                     data = json.load(f)
@@ -431,12 +431,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # 静态文件
-        if self.path == '/' or self.path == '/index.html':
+        if _path == '/' or _path == '/index.html':
             self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'index.html'), 'text/html; charset=utf-8')
             return
 
         # 项目进展页面（v25cf 新增）
-        if self.path == '/projects' or self.path == '/projects.html':
+        if _path == '/projects' or _path == '/projects.html':
             self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'projects.html'), 'text/html; charset=utf-8')
             return
 
@@ -453,7 +453,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         ip = get_client_ip(self)
 
         # 登录（公开）
-        if self.path == '/login':
+        if _path == '/login':
             # 限速检查
             if is_rate_limited(ip):
                 retry_after = LOGIN_WINDOW
@@ -515,7 +515,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # 登出
-        if self.path == '/logout':
+        if _path == '/logout':
             cookie_str = self.headers.get('Cookie', '')
             cookie = SimpleCookie(cookie_str)
             token_cookie = cookie.get(SESSION_COOKIE)
@@ -527,7 +527,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # 主动续期
-        if self.path == '/api/refresh':
+        if _path == '/api/refresh':
             sess, new_token = check_auth(self)
             if not sess:
                 self.send_json({"error": "unauthorized"}, status=401)
@@ -549,7 +549,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         if new_token:
             set_session_cookie(self, new_token, sess['ttl'])
 
-        if self.path == '/api/publish':
+        if _path == '/api/publish':
             self.handle_publish()
             return
 
