@@ -303,6 +303,9 @@ def clear_session_cookie(handler):
 
 
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
+    # Cloudflare 期望 HTTP/1.1，否则会报 'malformed MIME header'
+    # (cf tunnel 把 HTTP/1.0 当 broken MIME 处理)
+    protocol_version = 'HTTP/1.1'
     def log_message(self, format, *args):
         pass
 
