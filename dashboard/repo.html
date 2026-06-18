@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>项目详情 · Mavis Agent Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="theme-color" content="#3b82f6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📂</text></svg>">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  h1 { color: #60a5fa; font-size: 28px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  h2 { color: #93c5fd; margin: 24px 0 12px; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+  h2 .count { color: #64748b; font-size: 14px; font-weight: normal; }
+  .subtitle { color: #94a3b8; font-size: 14px; margin-bottom: 16px; }
+  .subtitle a { color: #60a5fa; text-decoration: none; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 16px 20px;
+  }
+  .card h3 { font-size: 11px; color: #94a3b8; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .card .value { font-size: 24px; font-weight: 600; color: #f1f5f9; }
+  .card .meta { color: #64748b; font-size: 12px; margin-top: 2px; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .btn {
+    background: #334155; color: #e2e8f0; border: 1px solid #475569;
+    padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
+    text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { background: #475569; }
+  .btn-primary { background: #2563eb; border-color: #3b82f6; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; }
+  .pill.private { background: #4c1d95; color: #c4b5fd; }
+  .pill.public { background: #14532d; color: #4ade80; }
+  .pill.archived { background: #374151; color: #9ca3af; }
+  .pill.fork { background: #1e3a8a; color: #93c5fd; }
+  .pill.commit { background: #14532d; color: #4ade80; }
+  .pill.issue { background: #7f1d1d; color: #fca5a5; }
+  .pill.pr { background: #581c87; color: #d8b4fe; }
+  .pill.draft { background: #78350f; color: #fcd34d; }
+  .pill.lang { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+  .pill.label { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; font-size: 10px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #334155; font-size: 14px; vertical-align: top; }
+  th { color: #94a3b8; font-weight: 500; font-size: 12px; text-transform: uppercase; }
+  tr:hover td { background: rgba(96, 165, 250, 0.05); }
+  .commit-msg { color: #cbd5e1; }
+  .commit-msg-full { color: #64748b; font-size: 12px; margin-top: 4px; white-space: pre-wrap; font-family: monospace; }
+  .commit-sha { color: #64748b; font-family: monospace; font-size: 12px; }
+  .time-ago { color: #64748b; font-size: 12px; }
+  .issue-title { font-weight: 500; }
+  .issue-title a { color: #f1f5f9; text-decoration: none; }
+  .issue-title a:hover { color: #60a5fa; }
+  .issue-body { color: #94a3b8; font-size: 12px; margin-top: 4px; max-height: 60px; overflow: hidden; }
+  .issue-meta { color: #64748b; font-size: 12px; margin-top: 4px; }
+  .loading { color: #94a3b8; padding: 40px; text-align: center; }
+  .err { color: #f87171; padding: 20px; }
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: #1e293b; color: #4ade80; border: 1px solid #14532d;
+    padding: 12px 20px; border-radius: 6px; font-size: 14px;
+    opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 1000;
+  }
+  .toast.show { opacity: 1; }
+  .user-link { color: #60a5fa; text-decoration: none; }
+  .user-link:hover { text-decoration: underline; }
+  .nav { margin-bottom: 16px; }
+  .nav a { color: #64748b; text-decoration: none; font-size: 14px; margin-right: 16px; }
+  .nav a:hover { color: #60a5fa; }
+  .nav a.active { color: #60a5fa; }
+  .description { color: #94a3b8; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="./">🖥️ 系统状态</a>
+  <a href="./projects.html">📦 项目进展</a>
+  <a href="#" class="active" id="navCurrent">📂 项目详情</a>
+</div>
+
+<div id="loading" class="loading">⏳ 加载中...</div>
+<div id="error" class="err" style="display:none;"></div>
+<div id="content" style="display:none;">
+
+  <h1>
+    <span id="repoName">--</span>
+    <span id="repoPills"></span>
+  </h1>
+  <div class="description" id="repoDesc"></div>
+  <div class="subtitle">
+    <span id="repoMeta">--</span>
+  </div>
+
+  <div class="toolbar" id="toolbar"></div>
+
+  <div class="grid" id="statsGrid"></div>
+
+  <h2>📝 Commits <span class="count" id="commitsCount"></span></h2>
+  <div class="card">
+    <table>
+      <thead><tr><th style="width:90px;">SHA</th><th>Message</th><th style="width:140px;">Author</th><th style="width:120px;">Time</th></tr></thead>
+      <tbody id="commitsTable"></tbody>
+    </table>
+  </div>
+
+  <h2>🔀 Pull Requests <span class="count" id="prsCount"></span></h2>
+  <div class="card">
+    <table>
+      <thead><tr><th style="width:60px;">#</th><th>Title</th><th style="width:100px;">Author</th><th style="width:90px;">Branch</th><th style="width:120px;">Time</th></tr></thead>
+      <tbody id="prsTable"></tbody>
+    </table>
+  </div>
+
+  <h2>🐛 Issues <span class="count" id="issuesCount"></span></h2>
+  <div class="card">
+    <table>
+      <thead><tr><th style="width:60px;">#</th><th>Title</th><th style="width:100px;">Author</th><th style="width:120px;">Labels</th><th style="width:120px;">Time</th></tr></thead>
+      <tbody id="issuesTable"></tbody>
+    </table>
+  </div>
+
+  <div class="subtitle" style="margin-top:24px;">
+    ⏱️ 最后刷新: <span id="refreshTime">--</span> · cache TTL 5min
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const REFRESH_MS = 5 * 60 * 1000;
+
+let rawData = null;
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function formatTime(iso) {
+  if (!iso) return '--';
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  if (diff < 86400 * 7) return `${Math.floor(diff/86400)}d ago`;
+  return d.toLocaleDateString();
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).then(
+    () => showToast('✅ 已复制: ' + text.substring(0, 50) + (text.length > 50 ? '...' : '')),
+    () => showToast('❌ 复制失败')
+  );
+}
+
+function getRepoNameFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('repo') || params.get('name') || window.location.pathname.split('/repo/').pop().replace(/\.html$/, '');
+}
+
+async function fetchData() {
+  const repoName = getRepoNameFromURL();
+  if (!repoName) {
+    showError('❌ URL 缺少 ?repo=<name> 参数');
+    return;
+  }
+  document.getElementById('navCurrent').textContent = `📂 ${repoName}`;
+
+  try {
+    const resp = await fetch(`./api/repos/${encodeURIComponent(repoName)}?t=${Date.now()}`);
+    if (resp.status === 401) {
+      window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname + window.location.search);
+      return;
+    }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    rawData = data;
+    render(data);
+  } catch (e) {
+    showError('❌ 加载失败: ' + escapeHtml(e.message));
+  }
+}
+
+function showError(msg) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('error').style.display = 'block';
+  document.getElementById('error').innerHTML = msg;
+}
+
+function renderPills(repo) {
+  const pills = [];
+  if (repo.private) pills.push('<span class="pill private">🔒 private</span>');
+  else pills.push('<span class="pill public">🌐 public</span>');
+  if (repo.archived) pills.push('<span class="pill archived">archived</span>');
+  if (repo.fork) pills.push('<span class="pill fork">fork</span>');
+  if (repo.language) pills.push(`<span class="pill lang">${escapeHtml(repo.language)}</span>`);
+  document.getElementById('repoPills').innerHTML = pills.join(' ');
+  document.getElementById('repoDesc').textContent = repo.description || '(无描述)';
+  const meta = [];
+  meta.push(`⭐ ${repo.stars}`);
+  meta.push(`🍴 ${repo.forks}`);
+  meta.push(`📦 ${(repo.size_kb/1024).toFixed(1)} MB`);
+  if (repo.license) meta.push(`📜 ${escapeHtml(repo.license)}`);
+  meta.push(`🌿 ${escapeHtml(repo.default_branch)}`);
+  if (repo.homepage) meta.push(`🔗 <a href="${escapeHtml(repo.homepage)}" target="_blank" class="user-link">homepage</a>`);
+  document.getElementById('repoMeta').innerHTML = meta.join(' · ');
+}
+
+function renderToolbar(repo) {
+  document.getElementById('toolbar').innerHTML = `
+    <a href="${escapeHtml(repo.html_url)}" target="_blank" class="btn btn-primary">📂 在 GitHub 打开</a>
+    <button class="btn" onclick="copyToClipboard('${escapeHtml(repo.clone_url)}')">📋 复制 HTTPS clone</button>
+    <button class="btn" onclick="copyToClipboard('${escapeHtml(repo.ssh_url)}')">📋 复制 SSH</button>
+    <button class="btn" onclick="fetchData()">🔄 刷新</button>
+  `;
+}
+
+function renderStats(r, s) {
+  const cards = [
+    { label: 'Commits', value: s.commits_count, meta: '最近 30 天' },
+    { label: 'Open PRs', value: s.open_prs_count, meta: '等 review', cls: s.open_prs_count > 0 ? 'warn' : '' },
+    { label: 'Open Issues', value: s.open_issues_count, meta: '需处理', cls: s.open_issues_count > 0 ? 'warn' : '' },
+    { label: 'Stars', value: r.stars, meta: '收藏' },
+    { label: 'Forks', value: r.forks, meta: '派生' },
+    { label: 'Watchers', value: r.watchers, meta: '关注' },
+  ];
+  document.getElementById('statsGrid').innerHTML = cards.map(c =>
+    `<div class="card"><h3>${c.label}</h3><div class="value" style="color:${c.cls === 'warn' ? '#fbbf24' : '#f1f5f9'}">${c.value}</div><div class="meta">${c.meta}</div></div>`
+  ).join('');
+}
+
+function renderCommits(items) {
+  document.getElementById('commitsCount').textContent = `共 ${items.length} 条`;
+  if (items.length === 0) {
+    document.getElementById('commitsTable').innerHTML = '<tr><td colspan="4" style="text-align:center;color:#94a3b8;">最近 30 天无 commit</td></tr>';
+    return;
+  }
+  document.getElementById('commitsTable').innerHTML = items.map(c => {
+    const fullMsg = c.message_full && c.message_full.includes('\n') ? c.message_full : null;
+    return `<tr>
+      <td><a href="${escapeHtml(c.url)}" target="_blank" class="commit-sha">${escapeHtml(c.short_sha)}</a></td>
+      <td>
+        <div class="commit-msg">${escapeHtml(c.message)}</div>
+        ${fullMsg ? `<div class="commit-msg-full">${escapeHtml(fullMsg)}</div>` : ''}
+      </td>
+      <td>${escapeHtml(c.author)}</td>
+      <td class="time-ago">${formatTime(c.date)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderPRs(items) {
+  document.getElementById('prsCount').textContent = `共 ${items.length} 条`;
+  if (items.length === 0) {
+    document.getElementById('prsTable').innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;">无开放 PR 🎉</td></tr>';
+    return;
+  }
+  document.getElementById('prsTable').innerHTML = items.map(p => {
+    const draftPill = p.draft ? '<span class="pill draft">DRAFT</span>' : '';
+    const labels = (p.labels || []).map(l => `<span class="pill label">${escapeHtml(l)}</span>`).join(' ');
+    const meta = [];
+    if (p.additions != null) meta.push(`<span style="color:#4ade80">+${p.additions}</span>`);
+    if (p.deletions != null) meta.push(`<span style="color:#f87171">-${p.deletions}</span>`);
+    return `<tr>
+      <td><a href="${escapeHtml(p.url)}" target="_blank" class="user-link">#${p.number}</a></td>
+      <td>
+        <div class="issue-title">${draftPill} <a href="${escapeHtml(p.url)}" target="_blank">${escapeHtml(p.title)}</a></div>
+        ${labels ? `<div class="issue-meta">${labels}</div>` : ''}
+        ${meta.length ? `<div class="issue-meta">${meta.join(' / ')}</div>` : ''}
+      </td>
+      <td><a href="https://github.com/${escapeHtml(p.user)}" target="_blank" class="user-link">${escapeHtml(p.user)}</a></td>
+      <td style="font-family:monospace;font-size:12px;">${escapeHtml(p.head_ref)} → ${escapeHtml(p.base_ref)}</td>
+      <td class="time-ago">${formatTime(p.updated_at || p.created_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderIssues(items) {
+  document.getElementById('issuesCount').textContent = `共 ${items.length} 条`;
+  if (items.length === 0) {
+    document.getElementById('issuesTable').innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8;">无开放 issue 🎉</td></tr>';
+    return;
+  }
+  document.getElementById('issuesTable').innerHTML = items.map(i => {
+    const labels = (i.labels || []).map(l => `<span class="pill label">${escapeHtml(l)}</span>`).join(' ');
+    const body = i.body ? `<div class="issue-body">${escapeHtml(i.body)}</div>` : '';
+    return `<tr>
+      <td><a href="${escapeHtml(i.url)}" target="_blank" class="user-link">#${i.number}</a></td>
+      <td>
+        <div class="issue-title"><a href="${escapeHtml(i.url)}" target="_blank">${escapeHtml(i.title)}</a></div>
+        ${body}
+        ${i.comments > 0 ? `<div class="issue-meta">💬 ${i.comments}</div>` : ''}
+      </td>
+      <td><a href="https://github.com/${escapeHtml(i.user)}" target="_blank" class="user-link">${escapeHtml(i.user)}</a></td>
+      <td>${labels || '-'}</td>
+      <td class="time-ago">${formatTime(i.updated_at || i.created_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function render(data) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('content').style.display = 'block';
+  document.getElementById('repoName').textContent = data.repo.full_name;
+  document.title = data.repo.full_name + ' · Mavis';
+  renderPills(data.repo);
+  renderToolbar(data.repo);
+  renderStats(data.repo, data.stats);
+  renderCommits(data.commits);
+  renderPRs(data.pulls);
+  renderIssues(data.issues);
+  document.getElementById('refreshTime').textContent = new Date().toLocaleTimeString();
+}
+
+fetchData();
+setInterval(fetchData, REFRESH_MS);
+</script>
+</body>
+</html>

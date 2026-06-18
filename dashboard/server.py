@@ -14,6 +14,7 @@ dashboard-server.py - Mavis Agent Dashboard HTTP server
   - POST /api/publish   → 推送事件（agent 调用）
   - GET  /api/history   → 推送历史
   - GET  /api/projects  → GitHub 项目进展 dashboard（v25cf 新增）
+  - GET  /api/repos/<name>  → 单个 repo 详情（v25cg 新增）
   - GET  /health        → 服务健康（公开）
 """
 import http.server
@@ -440,6 +441,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         # 项目进展页面（v25cf 新增）
         if _path == '/projects' or _path == '/projects.html':
             self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'projects.html'), 'text/html; charset=utf-8')
+            return
+
+        # 单个 repo 详情页（v25cg 新增）
+        if _path == '/repo' or _path == '/repo.html' or _path.startswith('/repo/'):
+            self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'repo.html'), 'text/html; charset=utf-8')
             return
 
         # 其他静态资源（dashboard 下的所有文件）

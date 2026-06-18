@@ -195,6 +195,117 @@ class GitHubClient:
         self.cache.set(cache_key, data)
         return data
 
+    def get_repo_full(self, full_name: str, activity_limit: int = 20) -> dict:
+        """单个 repo 详情 + 完整的 commits / issues / PRs 列表"""
+        cache_key = f"repo_full:{full_name}:{activity_limit}"
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+        # 并发拉
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            f_repo = ex.submit(self.get_repo, full_name)
+            f_commits = ex.submit(self.get_recent_commits, full_name, per_page=activity_limit)
+            f_issues = ex.submit(self.get_open_issues, full_name)
+            f_prs = ex.submit(self.get_open_prs, full_name)
+            repo = f_repo.result()
+            commits = f_commits.result()
+            issues = f_issues.result()
+            prs = f_prs.result()
+
+        # 格式化
+        commit_items = []
+        for c in commits:
+            sha = c.get("sha", "")[:7]
+            msg_lines = c.get("commit", {}).get("message", "").split("\n")
+            msg = msg_lines[0]
+            author = c.get("commit", {}).get("author", {}).get("name", "?")
+            date = c.get("commit", {}).get("author", {}).get("date", "")
+            commit_items.append({
+                "sha": sha,
+                "short_sha": sha[:7],
+                "message": msg,
+                "message_full": c.get("commit", {}).get("message", ""),
+                "author": author,
+                "author_username": c.get("author", {}).get("login", "") if c.get("author") else "",
+                "date": date,
+                "url": c.get("html_url", ""),
+            })
+
+        issue_items = []
+        for i in issues:
+            issue_items.append({
+                "number": i.get("number"),
+                "title": i.get("title", ""),
+                "state": i.get("state", ""),
+                "user": i.get("user", {}).get("login", "?"),
+                "created_at": i.get("created_at", ""),
+                "updated_at": i.get("updated_at", ""),
+                "comments": i.get("comments", 0),
+                "labels": [l.get("name", "") for l in i.get("labels", [])],
+                "url": i.get("html_url", ""),
+                "body": (i.get("body") or "")[:300],
+            })
+
+        pr_items = []
+        for p in prs:
+            pr_items.append({
+                "number": p.get("number"),
+                "title": p.get("title", ""),
+                "state": p.get("state", ""),
+                "user": p.get("user", {}).get("login", "?"),
+                "created_at": p.get("created_at", ""),
+                "updated_at": p.get("updated_at", ""),
+                "draft": p.get("draft", False),
+                "mergeable": p.get("mergeable"),
+                "additions": p.get("additions"),
+                "deletions": p.get("deletions"),
+                "changed_files": p.get("changed_files"),
+                "head_ref": p.get("head", {}).get("ref", ""),
+                "base_ref": p.get("base", {}).get("ref", ""),
+                "labels": [l.get("name", "") for l in p.get("labels", [])],
+                "url": p.get("html_url", ""),
+                "body": (p.get("body") or "")[:300],
+            })
+
+        result = {
+            "repo": {
+                "name": repo.get("name"),
+                "full_name": repo.get("full_name"),
+                "description": repo.get("description") or "",
+                "private": repo.get("private", False),
+                "fork": repo.get("fork", False),
+                "archived": repo.get("archived", False),
+                "language": repo.get("language"),
+                "stars": repo.get("stargazers_count", 0),
+                "forks": repo.get("forks_count", 0),
+                "open_issues": repo.get("open_issues_count", 0),
+                "watchers": repo.get("watchers_count", 0),
+                "size_kb": repo.get("size", 0),
+                "default_branch": repo.get("default_branch", "main"),
+                "html_url": repo.get("html_url", ""),
+                "clone_url": repo.get("clone_url", ""),
+                "ssh_url": repo.get("ssh_url", ""),
+                "pushed_at": repo.get("pushed_at", ""),
+                "updated_at": repo.get("updated_at", ""),
+                "created_at": repo.get("created_at", ""),
+                "topics": repo.get("topics", []),
+                "license": (repo.get("license") or {}).get("spdx_id", "") if repo.get("license") else "",
+                "homepage": repo.get("homepage", ""),
+            },
+            "commits": commit_items,
+            "issues": issue_items,
+            "pulls": pr_items,
+            "stats": {
+                "commits_count": len(commit_items),
+                "open_issues_count": len(issue_items),
+                "open_prs_count": len(pr_items),
+            },
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.cache.set(cache_key, result)
+        return result
+
     def get_recent_commits(self, full_name: str, since: Optional[str] = None,
                              per_page: int = 5) -> List[dict]:
         """最近 commits（per_page 最大 100）"""
