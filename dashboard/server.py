@@ -328,8 +328,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             })
             return
 
-        # 公开：登录页
-        if self.path == '/login' or self.path == '/login.html':
+        # 公开：登录页（去掉 query 后比较）
+        from urllib.parse import urlparse
+        _path = urlparse(self.path).path
+        if _path == '/login' or _path == '/login.html':
             self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'login.html'), 'text/html; charset=utf-8')
             return
 
@@ -345,12 +347,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         # 鉴权 gate
         sess, new_token = check_auth(self)
         if not sess:
-            # 区分 API 和页面请求
-            if self.path.startswith('/api/') or self.path in ('/events', '/history', '/publish'):
+            # 区分 API 和页面请求（用 path 不带 query）
+            if _path.startswith('/api/') or _path in ('/events', '/history', '/publish'):
                 self.send_json({"error": "unauthorized", "code": "AUTH_REQUIRED"}, status=401)
             else:
                 # 浏览器访问页面 → 跳 login.html（带 next 参数）
-                self.redirect(f'/login?next={self.path}')
+                self.redirect(f'/login?next={_path}')
             return
 
         # 续期 cookie
