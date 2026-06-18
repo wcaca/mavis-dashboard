@@ -480,7 +480,11 @@ class GitHubClient:
 
     def get_dashboard_data(self, username: Optional[str] = None,
                               include_forks: bool = False) -> dict:
-        """生成完整 dashboard 数据"""
+        """生成 dashboard 数据：只拉 repos 列表（快 ~3s）。
+
+        每个 repo 的 commits/issues/PRs 不在这里拉，按需走
+        /api/repos/<name>（get_repo_full）懒加载。
+        """
         if not username:
             username = self.get_username()
         start = time.time()
@@ -488,25 +492,17 @@ class GitHubClient:
         repos = self.list_user_repos(username, include_forks=include_forks)
         total = len(repos)
 
-        # 并发拉每个 repo 的活动
+        # 构轻量 list（不调 activity API）
         enriched: List[dict] = []
-        activity_per_repo: Dict[str, list] = {}
-        open_issues_total = 0
-        open_prs_total = 0
         archived_count = 0
         fork_count = 0
         total_stars = 0
         total_forks = 0
         language_count: Dict[str, int] = {}
 
-        def _enrich(r: dict) -> dict:
+        for r in repos:
             full_name = r["full_name"]
-            # 最近活动
-            try:
-                activity = self.get_recent_activity_for_repo(full_name, per_page=5)
-            except Exception as e:
-                activity = []
-            return {
+            item = {
                 "name": r["name"],
                 "full_name": full_name,
                 "description": (r.get("description") or "")[:200],
@@ -525,55 +521,34 @@ class GitHubClient:
                 "topics": r.get("topics", [])[:5],
                 "size_kb": r.get("size", 0),
                 "deployment_url": get_deployment_url(full_name),
-                "activity": activity,
             }
-
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futures = {ex.submit(_enrich, r): r for r in repos}
-            for fut in as_completed(futures):
-                try:
-                    item = fut.result()
-                except Exception as e:
-                    log(f"enrich 失败: {e}")
-                    continue
-                enriched.append(item)
-                if item["archived"]:
-                    archived_count += 1
-                if item["fork"]:
-                    fork_count += 1
-                total_stars += item["stars"]
-                total_forks += item["forks"]
-                # 语言统计
-                if item["language"]:
-                    language_count[item["language"]] = language_count.get(item["language"], 0) + 1
-                # 活动分类
-                for a in item["activity"]:
-                    if a["type"] == "issue":
-                        open_issues_total += 1
-                    elif a["type"] == "pr":
-                        open_prs_total += 1
+            enriched.append(item)
+            if item["archived"]:
+                archived_count += 1
+            if item["fork"]:
+                fork_count += 1
+            total_stars += item["stars"]
+            total_forks += item["forks"]
+            if item["language"]:
+                language_count[item["language"]] = language_count.get(item["language"], 0) + 1
 
         # 按 pushed_at 倒序
         enriched.sort(key=lambda x: x.get("pushed_at", ""), reverse=True)
 
-        # 算近 7 天 commits
+        # 算近 7/30 天活跃 repo
         seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         active_repos_7d = sum(1 for r in enriched if r.get("pushed_at", "") > seven_days_ago)
-        active_repos_30d = sum(1 for r in enriched if r.get("pushed_at", "") > (datetime.now(timezone.utc) - timedelta(days=30)).isoformat())
+        active_repos_30d = sum(1 for r in enriched if r.get("pushed_at", "") > thirty_days_ago)
 
-        # 算最近 commit 数量（每个 repo 的 activity 里有 commits）
+        # open issues / PRs 总量（GitHub list_user_repos 已经返回 open_issues_count
+        # 但它包含 PR — 我们不能区分。粗略估算：用 list 提供的 open_issues_count 总和
+        # 不准，所以标 None，让前端别显示具体数字
+        open_issues_total = sum(item["open_issues"] for item in enriched)
+        # 推算 PR 数量（无法准确，标 0）
+        open_prs_total = 0
         commits_today = 0
         commits_7d = 0
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        for r in enriched:
-            for a in r.get("activity", []):
-                if a["type"] != "commit":
-                    continue
-                d = a.get("date", "")
-                if d.startswith(today_str):
-                    commits_today += 1
-                if d > seven_days_ago:
-                    commits_7d += 1
 
         # 汇总 user 事件
         try:

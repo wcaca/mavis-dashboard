@@ -219,12 +219,8 @@ function renderRepos() {
     const privacyPill = r.private
       ? '<span class="pill private">🔒 private</span>'
       : '<span class="pill public">🌐 public</span>';
-    const lastActivity = r.activity && r.activity[0];
-    const lastCell = lastActivity
-      ? `<a href="${escapeHtml(lastActivity.url)}" target="_blank" style="text-decoration:none;">
-          <span class="pill ${lastActivity.type}">${lastActivity.type}</span>
-          <span class="commit-msg">${escapeHtml(lastActivity.title)}</span>
-        </a><div class="time-ago ${timeClass(lastActivity.date)}">${formatTime(lastActivity.date)}</div>`
+    const lastPushed = r.pushed_at
+      ? `<div class="time-ago ${timeClass(r.pushed_at)}" title="最近 push: ${escapeHtml(r.pushed_at)}">${formatTime(r.pushed_at)}</div><div style="color:#64748b;font-size:11px;">点看详情</div>`
       : '<span class="time-ago">无活动</span>';
     const langPill = r.language
       ? `<span class="pill lang" style="border-color:${langColor(r.language)};">${escapeHtml(r.language)}</span>`
@@ -242,31 +238,36 @@ function renderRepos() {
       <td>${langPill}</td>
       <td>${r.stars}</td>
       <td>${r.open_issues > 0 ? `<span style="color:#fbbf24">${r.open_issues}</span>` : r.open_issues}</td>
-      <td>${lastCell}</td>
+      <td>${lastPushed}</td>
       <td style="white-space:nowrap;">${r.deployment_url ? `<a href="${escapeHtml(r.deployment_url)}" target="_blank" class="pill" style="background:#1e3a8a;color:#93c5fd;text-decoration:none;" title="${escapeHtml(r.deployment_url)}">🌐 打开</a>` : '<span style="color:#475569">—</span>'}</td>
     </tr>`;
   }).join('');
 }
 
-function renderActivity(repos) {
+function renderActivity(userEvents) {
   const tbody = document.getElementById('activityTable');
-  // 拉所有 repo 的 activity，合并，按时间倒序
-  const all = [];
-  for (const r of repos) {
-    for (const a of (r.activity || [])) {
-      all.push({ ...a, repo: r.name, repo_url: r.html_url });
-    }
-  }
-  all.sort((x, y) => (y.date || '').localeCompare(x.date || ''));
-  document.getElementById('activityCount').textContent = `共 ${all.length} 条`;
-
-  if (all.length === 0) {
+  // userEvents 来自 /api/projects.user_events (用户自己的 GitHub 活动 feed)
+  const items = (userEvents || []).map(e => {
+    const repoName = (e.repo && e.repo.name) || '';
+    return {
+      type: (e.type || 'event').replace(/Event$/, '').toLowerCase(),
+      title: e.type === 'PushEvent'
+        ? `${(e.payload && e.payload.commits && e.payload.commits.length) || 0} commits pushed to ${repoName}`
+        : `${e.type} @ ${repoName}`,
+      url: `https://github.com/${repoName}`,
+      date: e.created_at,
+      repo: repoName,
+      repo_url: `https://github.com/${repoName}`,
+    };
+  });
+  document.getElementById('activityCount').textContent = `共 ${items.length} 条`;
+  if (items.length === 0) {
     tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#94a3b8;">暂无活动</td></tr>';
     return;
   }
-  tbody.innerHTML = all.slice(0, 50).map(a =>
+  tbody.innerHTML = items.slice(0, 30).map(a =>
     `<tr>
-      <td><span class="pill ${a.type}${a.draft ? ' draft' : ''}">${a.type}</span></td>
+      <td><span class="pill commit">${escapeHtml(a.type)}</span></td>
       <td><a href="${escapeHtml(a.repo_url)}" target="_blank" class="user-link">${escapeHtml(a.repo)}</a></td>
       <td><a href="${escapeHtml(a.url)}" target="_blank" style="color:#cbd5e1;text-decoration:none;">${escapeHtml(a.title)}</a></td>
       <td class="time-ago ${timeClass(a.date)}">${formatTime(a.date)}</td>
@@ -331,7 +332,7 @@ function render(data) {
   document.getElementById('lastUpdate').textContent = formatTime(data.generated_at);
   renderStats(data.stats);
   applyFilters();
-  renderActivity(data.repos);
+  renderActivity(data.user_events);
   renderLangs(data.stats.languages || {});
   document.getElementById('cacheStats').textContent =
     `entries=${data.cache.entries} hits=${data.cache.hits} misses=${data.cache.misses}`;
