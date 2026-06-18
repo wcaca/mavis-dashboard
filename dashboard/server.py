@@ -13,6 +13,7 @@ dashboard-server.py - Mavis Agent Dashboard HTTP server
   - GET  /api/events    → SSE 实时推送
   - POST /api/publish   → 推送事件（agent 调用）
   - GET  /api/history   → 推送历史
+  - GET  /api/projects  → GitHub 项目进展 dashboard（v25cf 新增）
   - GET  /health        → 服务健康（公开）
 """
 import http.server
@@ -27,6 +28,14 @@ import hashlib
 import secrets
 from datetime import datetime, timezone, timedelta
 from http.cookies import SimpleCookie
+
+# GitHub API 客户端（项目进展 dashboard）
+try:
+    from github_api import get_client as get_github_client
+    GITHUB_API_AVAILABLE = True
+except ImportError as e:
+    GITHUB_API_AVAILABLE = False
+    _GH_IMPORT_ERR = str(e)
 
 PORT = int(os.environ.get('PORT', 8765))
 
@@ -381,6 +390,18 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_agent_memory()
             return
 
+        if self.path == '/api/projects' or self.path == '/api/projects/':
+            self.handle_projects()
+            return
+
+        if self.path == '/api/projects/cache/stats':
+            self.handle_projects_cache_stats()
+            return
+
+        if self.path == '/api/projects/cache/clear':
+            self.handle_projects_cache_clear()
+            return
+
         # 兼容老路径（/state/*, /events, /history）— 同样鉴权后响应
         if self.path.startswith('/state/'):
             rel = self.path[1:]
@@ -410,6 +431,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         # 静态文件
         if self.path == '/' or self.path == '/index.html':
             self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'index.html'), 'text/html; charset=utf-8')
+            return
+
+        # 项目进展页面（v25cf 新增）
+        if self.path == '/projects' or self.path == '/projects.html':
+            self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'projects.html'), 'text/html; charset=utf-8')
             return
 
         # 其他静态资源（dashboard 下的所有文件）
@@ -690,6 +716,53 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({'error': str(e)}, status=500)
 
 
+    # ---------- GitHub Projects 端点 ----------
+
+    def handle_projects(self):
+        """返回项目进展 dashboard 数据"""
+        if not GITHUB_API_AVAILABLE:
+            self.send_json({
+                "error": "github_api module not available",
+                "detail": _GH_IMPORT_ERR,
+            }, status=500)
+            return
+        try:
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            username = (qs.get('username', [None]) or [None])[0]
+            include_forks = (qs.get('include_forks', ['false'])[0].lower() in ('1', 'true', 'yes'))
+
+            client = get_github_client()
+            data = client.get_dashboard_data(
+                username=username,
+                include_forks=include_forks,
+            )
+            self.send_json(data)
+        except Exception as e:
+            log(f"❌ /api/projects 失败: {e}")
+            self.send_json({"error": str(e)}, status=500)
+
+    def handle_projects_cache_stats(self):
+        if not GITHUB_API_AVAILABLE:
+            self.send_json({"error": "not available"}, status=500)
+            return
+        try:
+            self.send_json(get_github_client().cache.stats())
+        except Exception as e:
+            self.send_json({"error": str(e)}, status=500)
+
+    def handle_projects_cache_clear(self):
+        if not GITHUB_API_AVAILABLE:
+            self.send_json({"error": "not available"}, status=500)
+            return
+        try:
+            client = get_github_client()
+            # 重置缓存对象
+            client.cache = type(client.cache)(ttl=client.cache.ttl)
+            self.send_json({"ok": True, "message": "cache cleared"})
+        except Exception as e:
+            self.send_json({"error": str(e)}, status=500)
+
     def handle_publish(self):
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -733,6 +806,8 @@ def main():
     log(f"   SSE: http://localhost:{PORT}/api/events")
     log(f"   Publish: POST http://localhost:{PORT}/api/publish")
     log(f"   Health: http://localhost:{PORT}/health")
+    log(f"   Projects: http://localhost:{PORT}/api/projects")
+    log(f"   GitHub API: {'✓' if GITHUB_API_AVAILABLE else '✗ ' + _GH_IMPORT_ERR}")
 
     use_ssl = bool(os.environ.get("ENABLE_SSL") == "1" and SSL_CERT and SSL_KEY
                    and os.path.exists(SSL_CERT) and os.path.exists(SSL_KEY))
