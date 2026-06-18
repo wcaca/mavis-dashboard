@@ -318,6 +318,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     # ---------- GET ----------
 
     def do_GET(self):
+        # 解析 path（去掉 query string，所有路由都用 _path 比较）
+        from urllib.parse import urlparse
+        _path = urlparse(self.path).path
+
         # 公开：/health
         if _path == '/health':
             self.send_json({
@@ -328,9 +332,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             })
             return
 
-        # 公开：登录页（去掉 query 后比较）
-        from urllib.parse import urlparse
-        _path = urlparse(self.path).path
+        # 公开：登录页（_path 已在 do_GET 开头定义）
         if _path == '/login' or _path == '/login.html':
             self.serve_file(os.path.join(DASHBOARD_DIR, 'dashboard', 'login.html'), 'text/html; charset=utf-8')
             return
