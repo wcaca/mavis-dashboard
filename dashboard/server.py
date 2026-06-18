@@ -289,17 +289,25 @@ def check_auth(handler):
 
 
 def set_session_cookie(handler, token, ttl):
-    handler.send_header(
-        'Set-Cookie',
-        f'{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl}'
-    )
+    """返回 Set-Cookie 字符串。调用方应通过 send_json(extra_headers=...) 传入。
+
+    如果不传 extra_headers，Set-Cookie 也会被存到 handler._pending_cookies
+    让 send_json 自动加上去（保持向后兼容）。
+    """
+    cookie = f'{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl}'
+    if not hasattr(handler, '_pending_cookies'):
+        handler._pending_cookies = []
+    handler._pending_cookies.append(cookie)
+    return cookie
 
 
 def clear_session_cookie(handler):
-    handler.send_header(
-        'Set-Cookie',
-        f'{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'
-    )
+    """返回清空 session 的 Set-Cookie 字符串。"""
+    cookie = f'{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'
+    if not hasattr(handler, '_pending_cookies'):
+        handler._pending_cookies = []
+    handler._pending_cookies.append(cookie)
+    return cookie
 
 
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
@@ -525,7 +533,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             # 成功
             record_attempt(ip, True)
             token, ttl = create_session(username, remember)
-            set_session_cookie(self, token, ttl)  # 必须在 send_response 前
+            cookie = set_session_cookie(self, token, ttl)
             self.send_json({
                 "success": True,
                 "user": username,
@@ -533,7 +541,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 "ttl": ttl,
                 "expires_in": ttl,
                 "next": data.get('next', '/')
-            })
+            }, extra_headers={'Set-Cookie': cookie})
             log(f"✅ 登录: {username} (remember={remember}, ttl={ttl}s) from {ip}")
             return
 
@@ -544,8 +552,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             token_cookie = cookie.get(SESSION_COOKIE)
             if token_cookie:
                 destroy_session(token_cookie.value)
-            clear_session_cookie(self)  # 必须在 send_response 前
-            self.send_json({"success": True, "message": "已登出"})
+            clear_cookie = clear_session_cookie(self)
+            self.send_json({"success": True, "message": "已登出"}, extra_headers={'Set-Cookie': clear_cookie})
             return
 
         # 主动续期
@@ -554,13 +562,15 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             if not sess:
                 self.send_json({"error": "unauthorized"}, status=401)
                 return
+            cookie = None
             if new_token:
-                set_session_cookie(self, new_token, sess['ttl'])
+                cookie = set_session_cookie(self, new_token, sess['ttl'])
+            extra = {'Set-Cookie': cookie} if cookie else None
             self.send_json({
                 "success": True,
                 "expires_in": sess['ttl'],
                 "expires_at": datetime.fromtimestamp(sess['last_seen'] + sess['ttl'], timezone.utc).isoformat()
-            })
+            }, extra_headers=extra)
             return
 
         # 鉴权 gate
@@ -606,13 +616,57 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self.send_error(500, str(e))
 
-    def send_json(self, data, status=200):
+    def send_json(self, data, status=200, extra_headers=None):
+        """发送 JSON 响应。
+
+        重要：Python stdlib BaseHTTPRequestHandler.send_response 把 status line
+        append 到 _headers_buffer 末尾，flush 时按 list 顺序写出。如果在
+        send_response 之前调 send_header（如 set_session_cookie），那个 header
+        会排在 status line 之前，导致响应无效。
+
+        所以这里改用 _send_full_response：自己手动组装 status line + headers + body。
+        extra_headers: dict 包含额外 header（Set-Cookie 等）
+        会自动合并 self._pending_cookies 里的 Set-Cookie。
+        """
         content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
+        # 合并 _pending_cookies
+        pending = getattr(self, '_pending_cookies', None)
+        if pending:
+            extra_headers = dict(extra_headers) if extra_headers else {}
+            for c in pending:
+                # 如果 extra_headers 已有 Set-Cookie，会被覆盖 — 多个 Set-Cookie 浏览器不识别
+                # 简单起见，只用第一个
+                if 'Set-Cookie' not in extra_headers:
+                    extra_headers['Set-Cookie'] = c
+            self._pending_cookies = []
+        self._send_full_response(status, 'application/json', content, extra_headers)
+
+    def _send_full_response(self, status, content_type, body, extra_headers=None):
+        """完全控制响应：status line 在最前"""
+        # 收集所有 headers
+        headers = []
+        # 1) extra_headers 先（保证 Set-Cookie 等在 status line 之后）
+        if extra_headers:
+            for k, v in extra_headers.items():
+                headers.append((k, str(v)))
+        # 2) Content-Type
+        headers.append(('Content-Type', content_type))
+        # 3) Content-Length
+        headers.append(('Content-Length', str(len(body))))
+        # 4) 通用头（Date / Server / Connection）
+        headers.append(('Server', self.version_string() if hasattr(self, 'version_string') else 'SimpleHTTP'))
+        from email.utils import formatdate
+        headers.append(('Date', formatdate(usegmt=True)))
+        # 不再依赖 stdlib 的 _headers_buffer：直接构造 status line + headers + body
+        status_msg = self.responses.get(status, (''))[0]
+        status_line = ("%s %d %s\r\n" % (self.protocol_version, status, status_msg)).encode('latin-1', 'strict')
+        head = b''.join(("%s: %s\r\n" % (k, v)).encode('latin-1', 'strict') for k, v in headers)
+        # CORS（保留原有行为）
+        head = b"Access-Control-Allow-Origin: *\r\n" \
+               b"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" \
+               b"Access-Control-Allow-Headers: Content-Type\r\n" \
+               b"Connection: close\r\n" + head
+        self.wfile.write(status_line + head + b"\r\n" + body)
 
     def redirect(self, location):
         self.send_response(302)
