@@ -322,6 +322,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        # 防止搜索引擎索引（个人面板，2026-06-19 加）
+        self.send_header('X-Robots-Tag', 'noindex, nofollow')
         # 强制 Connection: close — 避免 HTTP/1.1 keep-alive 模式下
         # Python stdlib 不自动加 Content-Length/chunked encoding，
         # cloudflared 解析会报 'malformed MIME header: missing colon'
