@@ -448,13 +448,30 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"history": list(push_history)})
             return
 
-        elif _path == '/status.json':
-            try:
-                with open('/workspace/agent-memory/state/mavis-status.json') as f:
-                    data = json.load(f)
+        elif _path == '/status.json' or _path == '/api/status':
+            # mavis-status 缓存（多路径 fallback）
+            candidates = [
+                os.path.join(DASHBOARD_DIR, 'state', 'mavis-status.json'),
+                '/workspace/agent-memory/state/mavis-status.json',
+                os.path.join(DASHBOARD_DIR, 'dashboard', 'state', 'mavis-status.json'),
+            ]
+            data = None
+            for path in candidates:
+                if os.path.exists(path):
+                    try:
+                        with open(path) as f:
+                            data = json.load(f)
+                        break
+                    except Exception:
+                        pass
+            if data:
                 self.send_json(data)
-            except FileNotFoundError:
-                self.send_json({"overall": "unknown", "message": "尚未运行 mavis-status"})
+            else:
+                self.send_json({
+                    "overall": "unknown",
+                    "message": "尚未运行 mavis-status.sh",
+                    "hint": "bash /workspace/agent-memory/scripts/mavis-status.sh"
+                })
             return
 
         # 静态文件
