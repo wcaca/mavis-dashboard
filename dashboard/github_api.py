@@ -206,6 +206,59 @@ class GitHubClient:
                 break
         return all_items
 
+    # ---------- CI 状态 (GitHub Actions) ----------
+
+    def get_ci_status(self, full_name: str) -> dict:
+        """拿 repo 最近一次 workflow run 的状态（精简版）.
+
+        返回字段：
+          - enabled: bool         (有 Actions 启用 + 有 workflow)
+          - conclusion: str       (success / failure / cancelled / skipped / timed_out / None 当 running)
+          - status: str           (completed / in_progress / queued / requested / waiting)
+          - workflow_name: str
+          - run_id: int | None
+          - created_at: str
+          - html_url: str
+          - branch: str
+          - error: str | None     (查询失败原因)
+        """
+        cache_key = f"ci:{full_name}"
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+        # Actions API 限频 1000/h, 每个 repo 单独查
+        # 没 Actions / 404 / 403 都视为未启用
+        url = f"{GITHUB_API}/repos/{full_name}/actions/runs"
+        try:
+            data = self._request(url, {"per_page": 1})
+        except Exception as e:
+            err_str = str(e)
+            if "HTTP 404" in err_str or "HTTP 403" in err_str:
+                # Actions 未启用
+                result = {"enabled": False, "conclusion": None, "status": None, "workflow_name": None, "run_id": None, "created_at": None, "html_url": None, "branch": None}
+            else:
+                result = {"enabled": False, "conclusion": None, "status": None, "workflow_name": None, "run_id": None, "created_at": None, "html_url": None, "branch": None, "error": err_str[:200]}
+            self.cache.set(cache_key, result)
+            return result
+        runs = data.get("workflow_runs") or []
+        if not runs:
+            result = {"enabled": True, "conclusion": None, "status": None, "workflow_name": None, "run_id": None, "created_at": None, "html_url": None, "branch": None}
+            self.cache.set(cache_key, result)
+            return result
+        r = runs[0]
+        result = {
+            "enabled": True,
+            "conclusion": r.get("conclusion"),
+            "status": r.get("status"),
+            "workflow_name": r.get("name"),
+            "run_id": r.get("id"),
+            "created_at": r.get("created_at"),
+            "html_url": r.get("html_url"),
+            "branch": r.get("head_branch"),
+        }
+        self.cache.set(cache_key, result)
+        return result
+
     # ---------- 业务 API ----------
 
     def get_username(self) -> str:
@@ -541,6 +594,33 @@ class GitHubClient:
         active_repos_7d = sum(1 for r in enriched if r.get("pushed_at", "") > seven_days_ago)
         active_repos_30d = sum(1 for r in enriched if r.get("pushed_at", "") > thirty_days_ago)
 
+        # CI 状态: 并发查每个 repo 的最近 workflow run
+        # 注意: 默认不跳 forks, 跳 archived. 限频为 Actions API 1000/h/token, 可承受
+        ci_fail_count = 0
+        ci_running_count = 0
+        try:
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                future_to_item = {
+                    executor.submit(self.get_ci_status, item["full_name"]): item
+                    for item in enriched
+                    if not item.get("archived") and not item.get("fork")
+                }
+                for fut in as_completed(future_to_item):
+                    item = future_to_item[fut]
+                    try:
+                        ci = fut.result(timeout=20)
+                    except Exception as e:
+                        ci = {"enabled": False, "error": str(e)[:120]}
+                    item["ci_status"] = ci
+                    if ci.get("enabled") and ci.get("conclusion") == "failure":
+                        ci_fail_count += 1
+                    elif ci.get("enabled") and ci.get("status") in ("in_progress", "queued", "requested", "waiting"):
+                        ci_running_count += 1
+        except Exception as e:
+            log(f"⚠️  CI status query failed: {e}")
+            for item in enriched:
+                item.setdefault("ci_status", {"enabled": False, "error": str(e)[:120]})
+
         # open issues / PRs 总量（GitHub list_user_repos 已经返回 open_issues_count
         # 但它包含 PR — 我们不能区分。粗略估算：用 list 提供的 open_issues_count 总和
         # 不准，所以标 None，让前端别显示具体数字
@@ -602,6 +682,8 @@ class GitHubClient:
                 "commits_today": commits_today,
                 "commits_7d": commits_7d,
                 "languages": dict(sorted(language_count.items(), key=lambda x: -x[1])[:10]),
+                "ci_failing": ci_fail_count,
+                "ci_running": ci_running_count,
             },
             "repos": enriched,
             "user_events": user_events[:20],
@@ -621,3 +703,4 @@ def get_client() -> GitHubClient:
         if _client is None:
             _client = GitHubClient()
         return _client
+
