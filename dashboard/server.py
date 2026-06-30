@@ -32,7 +32,7 @@ from http.cookies import SimpleCookie
 
 # GitHub API 客户端（项目进展 dashboard）
 try:
-    from github_api import get_client as get_github_client
+    from github_api import get_client as get_github_client, _load_deployments as load_deployments
     GITHUB_API_AVAILABLE = True
 except ImportError as e:
     GITHUB_API_AVAILABLE = False
@@ -368,14 +368,18 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                         break
                     except Exception:
                         pass
-            if data:
-                self.send_json(data)
-            else:
-                self.send_json({
+            if data is None:
+                data = {
                     "overall": "unknown",
                     "message": "尚未运行 mavis-status.sh",
                     "hint": "bash /workspace/agent-memory/scripts/mavis-status.sh"
-                })
+                }
+            # v25dt+ 公开：附加部署映射 (用 github_api 内部函数)
+            try:
+                data["deployments"] = load_deployments()
+            except Exception:
+                data["deployments"] = {}
+            self.send_json(data)
             return
 
         # 公开：登录页（_path 已在 do_GET 开头定义）

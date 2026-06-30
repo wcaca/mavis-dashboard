@@ -125,6 +125,14 @@
   </div>
 </div>
 
+<h2>🌐 部署列表 <span id="deployCount" class="meta" style="font-weight:normal;font-size:12px;color:#94a3b8;"></span></h2>
+<div class="card">
+  <table>
+    <thead><tr><th>项目</th><th>URL</th></tr></thead>
+    <tbody id="deployTable"><tr><td colspan="2">Loading...</td></tr></tbody>
+  </table>
+</div>
+
 <h2>🐳 Docker 容器</h2>
 <div class="card">
   <table>
@@ -348,6 +356,26 @@ function render(snapshot, diff, dockerList) {
   }
 }
 
+function renderDeployments(status) {
+  const deps = (status && status.deployments) || {};
+  const keys = Object.keys(deps).sort();
+  const countEl = document.getElementById('deployCount');
+  const tbody = document.getElementById('deployTable');
+  if (countEl) countEl.textContent = `(${keys.length} 个)`;
+  if (keys.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="2" style="color:#94a3b8;">未加载部署映射 (跑 mavis-status 生成 deployments.json)</td></tr>';
+    return;
+  }
+  tbody.innerHTML = keys.map(k => {
+    const url = deps[k];
+    const short = k.replace(/^wcaca\//, '');
+    return `<tr>
+      <td style="color:#94a3b8;font-family:monospace;">${short}</td>
+      <td><a href="${url}" target="_blank" style="color:#60a5fa;text-decoration:none;">${url}</a></td>
+    </tr>`;
+  }).join('');
+}
+
 async function refresh() {
   const [snapshot, diff, docker, status] = await Promise.all([
     fetchState(),
@@ -356,6 +384,7 @@ async function refresh() {
     fetchStatus()
   ]);
   renderStatus(status);
+  renderDeployments(status);
   render(snapshot, diff, docker);
   document.getElementById('refreshTime').textContent = new Date().toLocaleTimeString();
 }
